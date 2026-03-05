@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>TuneRoom ❄️</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div id="bg-img"></div>
+<div id="bg-overlay"></div>
+<canvas id="bg-canvas"></canvas>
+
+<!-- Join modal -->
+<div id="modal" style="position:fixed;inset:0;background:rgba(4,7,26,.97);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(14px)">
+  <div class="join-card">
+    <div class="landing-logo" style="font-size:1.4rem">TUNE<span>ROOM</span></div>
+    <div class="field"><label>Your Name</label>
+      <input id="m-name" type="text" placeholder="Enter your name…" maxlength="20" autocomplete="off">
+    </div>
+    <div class="field"><label>Room ID</label>
+      <input id="m-room" type="text" value="{{ room_id }}" autocomplete="off">
+    </div>
+    <div class="field"><label>Pick a Color</label>
+      <div class="color-picker" id="m-cols"></div>
+    </div>
+    <button class="btn-join" id="btn-join">Enter Room →</button>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" style="display:none">
+
+  <header>
+    <div class="logo">
+      <img src="/static/img/logo.png" class="logo-wolf-sm" alt="">
+      TUNE<span>ROOM</span>
+    </div>
+    <div class="search-bar">
+      <input id="search-inp" type="text" placeholder="Search any song, artist, mood…">
+      <button id="btn-search">Search</button>
+    </div>
+    <div class="hdr-right">
+      <span id="u-count">1 jamming ❄️</span>
+      <span class="badge" id="room-badge">Room: main</span>
+    </div>
+  </header>
+
+  <div id="search-results"></div>
+
+  <!-- Queue -->
+  <div id="panel-queue">
+    <div class="panel-title-row">
+      <span class="panel-title-text">Queue</span>
+      <button id="btn-clear-queue" title="Clear all songs">🗑 Clear</button>
+    </div>
+    <div id="playlist-bar">
+      <input id="playlist-inp" type="text" placeholder="Paste YouTube playlist URL…">
+      <button id="btn-playlist">📋 Load</button>
+    </div>
+    <div id="q-list"></div>
+  </div>
+
+  <!-- Player -->
+  <div id="panel-player">
+
+    <!-- Lyrics panel slides up over player -->
+    <div id="lyrics-panel">
+      <div id="lyrics-header">
+        <div id="lyrics-title">Lyrics</div>
+        <button id="btn-lyrics-close">✕</button>
+      </div>
+      <div id="lyrics-body">
+        <div class="lyr-msg">Play a song to see lyrics</div>
+      </div>
+    </div>
+
+    <div id="yt-wrap"><div id="yt-player"></div></div>
+
+    <div id="now-playing">
+      <div class="np-label">Now Playing</div>
+      <div id="np-title">Nothing playing yet</div>
+      <div id="np-channel">Add songs to get started</div>
+    </div>
+
+    <div id="player-ctrls">
+      <button class="ctrl-btn" id="btn-prev">⏮</button>
+      <button class="ctrl-btn" id="btn-pp">▶</button>
+      <button class="ctrl-btn" id="btn-next">⏭</button>
+      <button class="ctrl-btn" id="btn-shuf">🔀</button>
+    </div>
+
+    <div id="extra-ctrls">
+      <button id="btn-vid-toggle">🎬 Video</button>
+      <button id="btn-lyrics">🎤 Lyrics</button>
+    </div>
+
+    <div id="paste-bar">
+      <input id="paste-inp" type="text" placeholder="Paste YouTube link or video ID…">
+      <button id="btn-paste">➕ Add</button>
+    </div>
+
+  </div>
+
+  <!-- Chat -->
+  <div id="panel-chat">
+    <div class="panel-title">Chat</div>
+    <div id="chat-msgs"></div>
+    <div id="voice-section">
+      <div class="voice-header">
+        <span class="voice-label">Voice</span>
+        <div id="voice-peers"></div>
+      </div>
+      <div class="voice-btns">
+        <button id="btn-voice">🎙 Join Voice</button>
+        <button id="btn-mute">🎤 Mute</button>
+      </div>
+    </div>
+    <div id="chat-input-bar">
+      <input id="chat-inp" type="text" placeholder="Message… (/w name msg for whisper)">
+      <button id="btn-send">↑</button>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+<script src="/static/js/butterflies.js"></script>
+<script src="/static/js/main.js"></script>
+
+<script>
+  // Auto-join if coming from index page via sessionStorage
+  (function(){
+    var name  = sessionStorage.getItem('tr_name');
+    var color = sessionStorage.getItem('tr_color');
+    var room  = sessionStorage.getItem('tr_room') || '{{ room_id }}';
+    if(name){
+      window.addEventListener('DOMContentLoaded', function(){
+        document.getElementById('m-name').value = name;
+        document.getElementById('m-room').value = room;
+      });
+      window.addEventListener('load', function(){
+        // Click matching color dot
+        document.querySelectorAll('.color-dot').forEach(function(d){
+          if(d.style.background === color || d.style.backgroundColor === color) d.click();
+        });
+        setTimeout(function(){ document.getElementById('btn-join').click(); }, 60);
+      });
+    }
+  })();
+</script>
+</body>
+</html>

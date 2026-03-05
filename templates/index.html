@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>TuneRoom ❄️ — Listen Together</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div id="bg-img"></div>
+<div id="bg-overlay"></div>
+<canvas id="bg-canvas"></canvas>
+
+<div class="landing-wrap">
+  <div class="logo-hero">
+    <img src="/static/img/logo.png" class="logo-wolf" alt="TuneRoom">
+    <div class="landing-sub">❄️ &nbsp; Listen Together &nbsp; ❄️</div>
+  </div>
+
+  <div class="join-card">
+    <div class="field">
+      <label>Your Name</label>
+      <input id="m-name" type="text" placeholder="Enter your name…" maxlength="20" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Room ID</label>
+      <input id="m-room" type="text" value="main" placeholder="main" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Pick a Color</label>
+      <div class="color-picker" id="m-cols"></div>
+    </div>
+    <button class="btn-join" id="btn-join">Enter Room →</button>
+  </div>
+
+
+</div>
+
+<div id="toast"></div>
+
+<script src="/static/js/butterflies.js"></script>
+<script>
+(function(){
+  var COLORS = ['#60a5fa','#34d399','#f472b6','#fb923c','#a78bfa','#facc15','#38bdf8','#f87171'];
+  var selCol = COLORS[0];
+
+  // Color picker
+  var el = document.getElementById('m-cols');
+  COLORS.forEach(function(c){
+    var d = document.createElement('div');
+    d.className = 'color-dot'+(c===selCol?' on':'');
+    d.style.background = c;
+    d.onclick = function(){
+      document.querySelectorAll('.color-dot').forEach(function(x){ x.classList.remove('on'); });
+      d.classList.add('on'); selCol = c;
+    };
+    el.appendChild(d);
+  });
+
+  function toast(msg){
+    var t=document.getElementById('toast');
+    t.textContent=msg; t.classList.add('on');
+    setTimeout(function(){ t.classList.remove('on'); },2800);
+  }
+
+  function doJoin(){
+    var name = document.getElementById('m-name').value.trim();
+    var room = document.getElementById('m-room').value.trim() || 'main';
+    if(!name){ toast('Enter your name!'); return; }
+    sessionStorage.setItem('tr_name',  name);
+    sessionStorage.setItem('tr_color', selCol);
+    sessionStorage.setItem('tr_room',  room);
+    window.location.href = '/room/'+encodeURIComponent(room);
+  }
+
+  document.getElementById('btn-join').onclick = doJoin;
+  document.getElementById('m-name').onkeydown = function(e){ if(e.key==='Enter') doJoin(); };
+  document.getElementById('m-room').onkeydown = function(e){ if(e.key==='Enter') doJoin(); };
+})();
+</script>
+</body>
+</html>

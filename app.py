@@ -17,14 +17,18 @@ REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
 CACHE_TTL   = 6 * 3600   # search cache expires after 6 hours
 
 def redis_cmd(*args):
-    """Send a command to Upstash Redis REST API. Returns parsed response."""
+    """Send a command to Upstash Redis REST API using JSON body."""
     if not REDIS_URL or not REDIS_TOKEN:
         return None
     try:
         resp = requests.post(
-            f'{REDIS_URL}/{"/".join(str(a) for a in args)}',
-            headers={'Authorization': f'Bearer {REDIS_TOKEN}'},
-            timeout=4
+            f'{REDIS_URL}',
+            headers={
+                'Authorization': f'Bearer {REDIS_TOKEN}',
+                'Content-Type':  'application/json'
+            },
+            json=list(args),
+            timeout=5
         )
         if resp.ok:
             return resp.json().get('result')
@@ -389,14 +393,20 @@ def api_search():
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/cache/stats')
 def cache_stats():
-    now = time.time()
-    active = {k:v for k,v in search_cache.items() if (now - v['ts']) < CACHE_TTL}
-    return jsonify({
-        'cached_queries': len(active),
-        'max_cache':      CACHE_MAX,
-        'ttl_hours':      CACHE_TTL // 3600,
-        'queries':        list(active.keys())
-    })
+    try:
+        # List all cache keys from Redis
+        keys = redis_cmd('KEYS', 'tr:cache:*')
+        if not keys:
+            keys = []
+        queries = [k.replace('tr:cache:', '') for k in keys]
+        return jsonify({
+            'cached_queries': len(queries),
+            'ttl_hours':      CACHE_TTL // 3600,
+            'redis':          bool(REDIS_URL),
+            'queries':        queries
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'cached_queries': 0})
 
 # ─────────────────────────────────────────────────────────────
 #  LYRICS  — 5-source cascade, no API key needed

@@ -22,6 +22,10 @@ def get_room(rid):
 # ─────────────────────────────────────────────────────────────
 #  PAGES
 # ─────────────────────────────────────────────────────────────
+@app.route('/favicon.ico')
+def favicon():
+    return app.send_static_file('img/favicon.ico')
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -51,12 +55,11 @@ def api_search():
         resp = requests.get(
             'https://www.googleapis.com/youtube/v3/search',
             params={
-                'part':            'snippet',
-                'q':               q,
-                'type':            'video',
-                'videoCategoryId': '10',
-                'maxResults':      10,
-                'key':             yt_key
+                'part':       'snippet',
+                'q':          q,
+                'type':       'video',
+                'maxResults': 10,
+                'key':        yt_key
             },
             timeout=8
         )
@@ -67,21 +70,24 @@ def api_search():
 
         results = []
         for item in data.get('items', []):
-            vid = item['id']['videoId']
-            sn  = item['snippet']
-            results.append({
-                'id':        vid,
-                'title':     sn['title'],
-                'channel':   sn['channelTitle'],
-                'thumbnail': f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'
-            })
+            try:
+                vid = item['id']['videoId']
+                sn  = item['snippet']
+                results.append({
+                    'id':        vid,
+                    'title':     sn.get('title', ''),
+                    'channel':   sn.get('channelTitle', ''),
+                    'thumbnail': f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'
+                })
+            except (KeyError, TypeError):
+                continue
 
         return jsonify({'source': 'youtube', 'results': results})
 
     except requests.Timeout:
         return jsonify({'error': 'Search timed out', 'results': []}), 200
     except Exception as e:
-        return jsonify({'error': str(e), 'results': []}), 500
+        return jsonify({'error': str(e), 'results': []}), 200
 
 
 # ─────────────────────────────────────────────────────────────

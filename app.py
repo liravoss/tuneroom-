@@ -104,14 +104,13 @@ def _search_invidious(q):
                 f'{instance}/api/v1/search',
                 params={'q': q, 'type': 'video', 'page': 1},
                 timeout=8,
-                headers={'User-Agent': 'TuneRoom/1.0'}
+                headers={'User-Agent': 'Mozilla/5.0'}
             )
             if not resp.ok:
                 continue
             items = resp.json()
             if not isinstance(items, list):
                 continue
-
             results = []
             for item in items[:10]:
                 vid = item.get('videoId', '')
@@ -130,26 +129,149 @@ def _search_invidious(q):
     return None
 
 
+# Multiple Piped instances
+PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.adminforge.de',
+    'https://piped-api.garudalinux.org',
+    'https://api.piped.yt',
+    'https://pipedapi.in.projectsegfau.lt',
+]
+
+def _search_piped(q):
+    """Search using Piped API — no key needed."""
+    for instance in PIPED_INSTANCES:
+        try:
+            resp = requests.get(
+                f'{instance}/search',
+                params={'q': q, 'filter': 'videos'},
+                timeout=8,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if not resp.ok:
+                continue
+            items = resp.json().get('items', [])
+            results = []
+            for item in items[:10]:
+                vid = item.get('url', '').replace('/watch?v=', '').strip()
+                if not vid or len(vid) != 11:
+                    continue
+                results.append({
+                    'id':        vid,
+                    'title':     item.get('title', ''),
+                    'channel':   item.get('uploaderName', ''),
+                    'thumbnail': f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'
+                })
+            if results:
+                return results
+        except Exception:
+            continue
+    return None
+
+
+def _search_youtube_nokey(q):
+    """
+    No-key YouTube search using YouTube's internal suggestion API.
+    Uses youtube.com/youtubei/v1/search — same endpoint the YouTube
+    website uses internally, always accessible, no API key needed.
+    """
+    import json as _json
+    try:
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": "2.20231219.04.00",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "query": q
+        }
+        resp = requests.post(
+            'https://www.youtube.com/youtubei/v1/search',
+            params={'prettyPrint': 'false'},
+            json=payload,
+            timeout=12,
+            headers={
+                'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Content-Type': 'application/json',
+                'X-YouTube-Client-Name': '1',
+                'X-YouTube-Client-Version': '2.20231219.04.00',
+                'Origin': 'https://www.youtube.com',
+                'Referer': 'https://www.youtube.com/',
+            }
+        )
+        if not resp.ok:
+            return None
+
+        data = resp.json()
+
+        # Walk the nested response to find video items
+        import re as _re
+        text = resp.text
+        # Extract all videoIds and titles from the response JSON
+        video_ids = _re.findall(r'"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"', text)
+        titles    = _re.findall(r'"title"\s*:\s*\{"runs"\s*:\s*\[\{"text"\s*:\s*"([^"]+)"', text)
+        channels  = _re.findall(r'"ownerText"\s*:\s*\{"runs"\s*:\s*\[\{"text"\s*:\s*"([^"]+)"', text)
+
+        # Deduplicate
+        seen, unique = set(), []
+        for vid in video_ids:
+            if vid not in seen:
+                seen.add(vid)
+                unique.append(vid)
+
+        results = []
+        for i, vid in enumerate(unique[:10]):
+            results.append({
+                'id':        vid,
+                'title':     titles[i]   if i < len(titles)   else q,
+                'channel':   channels[i] if i < len(channels) else '',
+                'thumbnail': f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'
+            })
+        return results if results else None
+
+    except Exception:
+        return None
+
+
 @app.route('/api/search')
 def api_search():
     q = request.args.get('q', '').strip()
     if not q:
         return jsonify({'error': 'empty query'}), 400
 
-    # ── Try YouTube API keys in order ──────────────────────────
-    for env_var in ['YOUTUBE_API_KEY', 'YOUTUBE_API_KEY_2', 'YOUTUBE_API_KEY_3']:
-        key = os.environ.get(env_var, '').strip()
-        if not key:
-            continue
+    # ── Try YouTube API keys in order (supports unlimited keys) ─
+    # Reads YOUTUBE_API_KEY, YOUTUBE_API_KEY_2 ... YOUTUBE_API_KEY_30
+    yt_keys = []
+    base = os.environ.get('YOUTUBE_API_KEY', '').strip()
+    if base: yt_keys.append(base)
+    for i in range(2, 31):
+        k = os.environ.get(f'YOUTUBE_API_KEY_{i}', '').strip()
+        if k: yt_keys.append(k)
+
+    for key in yt_keys:
         results = _search_youtube_key(q, key)
         if results is not None:
             return jsonify({'source': 'youtube', 'results': results})
         # None means quota hit — try next key
 
-    # ── All YouTube keys exhausted → fallback to Invidious ─────
+        # ── All YouTube keys exhausted → try free fallbacks ────────
+    # Fallback 1: Invidious (open YouTube frontend, no key)
     results = _search_invidious(q)
     if results:
         return jsonify({'source': 'invidious', 'results': results})
+
+    # Fallback 2: Piped API (another open YouTube frontend)
+    results = _search_piped(q)
+    if results:
+        return jsonify({'source': 'piped', 'results': results})
+
+    # Fallback 3: YouTube internal API (no key, always works)
+    results = _search_youtube_nokey(q)
+    if results:
+        return jsonify({'source': 'youtube_nokey', 'results': results})
 
     return jsonify({'error': 'All search sources unavailable', 'results': []}), 200
 
@@ -537,7 +659,8 @@ def on_voice_signal(data):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    keys = [os.environ.get(k,'') for k in ['YOUTUBE_API_KEY','YOUTUBE_API_KEY_2','YOUTUBE_API_KEY_3']]
+    keys = [os.environ.get('YOUTUBE_API_KEY','').strip()]
+    keys += [os.environ.get(f'YOUTUBE_API_KEY_{i}','').strip() for i in range(2,31)]
     active_keys = sum(1 for k in keys if k)
     print(f'\n  ❄️  TuneRoom → http://localhost:{port}')
     print(f'  YouTube keys   : {active_keys} active key(s)')

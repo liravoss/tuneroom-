@@ -147,6 +147,19 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 #btn-search:hover { opacity:.85; }
 
 .hdr-right { display:flex;align-items:center;gap:8px;flex-shrink:0; }
+#btn-share {
+  background: rgba(96,165,250,0.1);
+  border: 1px solid rgba(96,165,250,0.25);
+  border-radius: 8px;
+  color: #93c5fd;
+  font-size: .78rem;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  transition: background .2s, border-color .2s;
+  white-space: nowrap;
+}
+#btn-share:hover { background: rgba(96,165,250,0.2); border-color: rgba(96,165,250,0.5); }
 .badge { font-size:.68rem;background:var(--glass);border:1px solid var(--bord);border-radius:20px;padding:3px 10px;color:var(--dim); }
 #u-count { font-size:.74rem;color:var(--ice2); }
 
@@ -237,7 +250,57 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 
 /* ── Player Panel ── */
 #panel-player { display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:12px;overflow:hidden;position:relative; }
-#yt-wrap { width:100%;max-width:580px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;border:1px solid var(--bord);box-shadow:0 0 50px rgba(96,165,250,.1),0 16px 48px rgba(0,0,0,.5);background:#000;flex-shrink:0;transition:opacity .3s,height .3s; }
+#yt-wrap {
+  width: 100%;
+  max-width: 580px;
+  aspect-ratio: 16/9;
+  border-radius: 16px;
+  overflow: hidden;
+  flex-shrink: 0;
+  transition: opacity .3s, height .3s;
+  position: relative;
+
+  /* Frost border glow */
+  border: 1px solid rgba(96,165,250,0.2);
+  box-shadow:
+    0 0 0 1px rgba(96,165,250,0.08),
+    0 0 40px rgba(96,165,250,0.12),
+    0 0 80px rgba(56,189,248,0.08),
+    0 20px 60px rgba(0,0,0,0.6),
+    inset 0 0 30px rgba(4,7,26,0.4);
+
+  /* Blend video into dark background */
+  background: #000;
+  isolation: isolate;
+}
+
+/* Soft vignette overlay around video edges */
+#yt-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 60%, rgba(4,7,26,0.55) 100%);
+  z-index: 1;
+}
+
+/* Frost top/bottom fade */
+#yt-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom,
+      rgba(4,7,26,0.25) 0%,
+      transparent 15%,
+      transparent 85%,
+      rgba(4,7,26,0.35) 100%);
+  z-index: 1;
+}
 #yt-wrap > div,#yt-wrap iframe { width:100%!important;height:100%!important; }
 #now-playing { text-align:center;width:100%;max-width:460px; }
 .np-label   { font-size:.64rem;letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin-bottom:3px; }
@@ -554,4 +617,35 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 /* ── Hide mob-nav on desktop ── */
 @media (min-width: 769px) {
   #mob-nav { display: none; }
+}
+
+/* ── Page transition animations ── */
+@keyframes pageIn {
+  from { opacity:0; transform:translateY(16px) scale(0.98); }
+  to   { opacity:1; transform:translateY(0)    scale(1); }
+}
+@keyframes cardIn {
+  from { opacity:0; transform:translateY(30px) scale(0.95); }
+  to   { opacity:1; transform:translateY(0)    scale(1); }
+}
+@keyframes modalFadeOut {
+  from { opacity:1; transform:scale(1); }
+  to   { opacity:0; transform:scale(1.04); }
+}
+@keyframes appFadeIn {
+  from { opacity:0; }
+  to   { opacity:1; }
+}
+
+.landing-wrap { animation: pageIn 0.6s cubic-bezier(0.22,1,0.36,1) both; }
+.join-card    { animation: cardIn 0.7s cubic-bezier(0.22,1,0.36,1) 0.1s both; }
+.logo-hero    { animation: pageIn 0.6s cubic-bezier(0.22,1,0.36,1) 0.05s both; }
+
+.modal-exit { animation: modalFadeOut 0.4s ease forwards !important; }
+#app.app-enter { animation: appFadeIn 0.5s ease both; }
+
+/* Respect reduced motion — skip animations for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .landing-wrap, .join-card, .logo-hero,
+  .modal-exit, #app.app-enter { animation: none !important; transition: none !important; }
 }

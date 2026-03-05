@@ -5,9 +5,16 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>TuneRoom ❄️</title>
   <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon">
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#60a5fa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TuneRoom">
+  <link rel="apple-touch-icon" href="/static/img/icon-192.png">
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
-<body>
+<body style="animation:pageIn 0.4s ease both">
 
 <div id="bg-img"></div>
 <div id="bg-overlay"></div>
@@ -45,6 +52,7 @@
     <div class="hdr-right">
       <span id="u-count">1 jamming ❄️</span>
       <span class="badge" id="room-badge">Room: main</span>
+      <button id="btn-share" title="Copy invite link">🔗 Invite</button>
     </div>
   </header>
 
@@ -154,13 +162,22 @@
       });
       window.addEventListener('load', function(){
         // Click matching color dot
+        // Store color on data attribute to avoid hex vs rgb mismatch
         document.querySelectorAll('.color-dot').forEach(function(d){
-          if(d.style.background === color || d.style.backgroundColor === color) d.click();
+          if(d.dataset.color === color) d.click();
         });
         setTimeout(function(){ document.getElementById('btn-join').click(); }, 60);
       });
     }
   })();
+</script>
+
+<script>
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('/sw.js')
+      .then(function(){ console.log('TuneRoom SW registered'); })
+      .catch(function(e){ console.log('SW error:', e); });
+  }
 </script>
 </body>
 </html>

@@ -36,6 +36,7 @@ function initColorPicker(){
     var d = document.createElement('div');
     d.className = 'color-dot'+(c===selCol?' on':'');
     d.style.background = c;
+    d.dataset.color = c;
     d.onclick = function(){
       document.querySelectorAll('.color-dot').forEach(function(x){ x.classList.remove('on'); });
       d.classList.add('on'); selCol = c;
@@ -51,12 +52,21 @@ function doJoin(){
   ME.name  = n;
   ME.room  = $('m-room').value.trim() || 'main';
   ME.color = selCol;
-  $('modal').style.display = 'none';
-  $('app').style.display   = 'grid';
-  $('room-badge').textContent = 'Room: '+ME.room;
-  wireButtons();
-  initSocket();
-  sysMsg(ME.name+' joined ❄️');
+
+  // Smooth modal fade out → app fade in
+  var modal = $('modal');
+  var app   = $('app');
+  modal.classList.add('modal-exit');
+  setTimeout(function(){
+    modal.style.display = 'none';
+    app.style.display   = 'grid';
+    app.classList.add('app-enter');
+    $('room-badge').textContent = 'Room: '+ME.room;
+    wireButtons();
+    initShareBtn();
+    initSocket();
+    sysMsg(ME.name+' joined ❄️');
+  }, 380);
 }
 
 // ── Socket.IO ────────────────────────────────────────────────
@@ -159,6 +169,7 @@ window.onYouTubeIframeAPIReady = function(){
         if(e.data === S.PLAYING){
           $('btn-pp').textContent = '⏸';
           retryCount = 0; clearRetry();
+          startWatchdog();
           if(!syncLock) emitSync();
         } else if(e.data === S.PAUSED){
           $('btn-pp').textContent = '▶';
@@ -166,6 +177,7 @@ window.onYouTubeIframeAPIReady = function(){
         } else if(e.data === S.CUED){
           ytPlayer.playVideo();
         } else if(e.data === S.ENDED){
+          stopWatchdog();
           nextSong();
         } else if(e.data === S.UNSTARTED || e.data === -1){
           // Video failed to load — retry up to 3 times
@@ -188,21 +200,90 @@ window.onYouTubeIframeAPIReady = function(){
   });
 };
 
-// ── Retry logic (fixes "can't play, refresh fixes it") ───────
+// ── Retry logic — smart auto-recovery ───────────────────────
 function scheduleRetry(){
-  if(retryCount >= 3){ toast('Skipping unplayable video'); nextSong(); return; }
+  if(retryCount >= 4){ toast('⏭ Skipping unplayable video'); nextSong(); return; }
   clearRetry();
+  var delay = retryCount === 0 ? 1500 : 3000;
   retryTimer = setTimeout(function(){
     retryCount++;
-    if(curIdx >= 0 && queue[curIdx]){
-      toast('Retrying… ('+retryCount+'/3)');
-      ytPlayer.loadVideoById(queue[curIdx].id);
+    if(curIdx < 0 || !queue[curIdx]) return;
+    var vid = queue[curIdx].id;
+    if(retryCount === 1){
+      // First retry — just replay
+      toast('↺ Retrying…');
+      ytPlayer.loadVideoById(vid);
+    } else if(retryCount === 2){
+      // Second retry — stop and reload
+      toast('↺ Reloading player…');
+      ytPlayer.stopVideo();
+      setTimeout(function(){ ytPlayer.loadVideoById(vid); }, 800);
+    } else if(retryCount === 3){
+      // Third retry — seek to 0 and force play
+      toast('↺ Force restarting…');
+      ytPlayer.loadVideoById(vid, 0);
+      setTimeout(function(){
+        try { ytPlayer.playVideo(); } catch(e){}
+      }, 1200);
+    } else {
+      // Final — skip
+      toast('⏭ Skipping unplayable video');
+      nextSong();
     }
-  }, 2000 * retryCount + 1000);
+  }, delay);
 }
 
 function clearRetry(){
   if(retryTimer){ clearTimeout(retryTimer); retryTimer = null; }
+}
+
+// ── Stuck player watchdog — checks every 8s if player is frozen
+var watchdogTimer = null;
+var lastPlayerTime = 0;
+var watchdogMisses = 0;
+
+function startWatchdog(){
+  stopWatchdog();
+  watchdogMisses = 0;
+  watchdogTimer = setInterval(function(){
+    if(!ytReady || !ytPlayer || !currentSong) return;
+    try {
+      var state = ytPlayer.getPlayerState();
+      var ct    = ytPlayer.getCurrentTime();
+      // Only check when supposed to be playing
+      if(state === YT.PlayerState.PLAYING){
+        if(Math.abs(ct - lastPlayerTime) < 0.3){
+          // Time hasn't moved — player is frozen
+          watchdogMisses++;
+          if(watchdogMisses >= 2){
+            watchdogMisses = 0;
+            toast('↺ Player stuck — auto-recovering…');
+            ytPlayer.loadVideoById(queue[curIdx].id, Math.max(0, ct - 1));
+          }
+        } else {
+          watchdogMisses = 0;
+        }
+        lastPlayerTime = ct;
+      } else if(state === YT.PlayerState.BUFFERING){
+        // Buffering too long
+        watchdogMisses++;
+        if(watchdogMisses >= 3){
+          watchdogMisses = 0;
+          toast('↺ Buffering too long — retrying…');
+          scheduleRetry();
+        }
+      } else {
+        watchdogMisses = 0;
+        lastPlayerTime = 0;
+      }
+    } catch(e){}
+  }, 8000);
+}
+
+function stopWatchdog(){
+  if(watchdogTimer){ clearInterval(watchdogTimer); watchdogTimer = null; }
+  watchdogMisses = 0;
+  lastPlayerTime = 0;
 }
 
 // ── Play ─────────────────────────────────────────────────────
@@ -509,6 +590,35 @@ function sendChat(){
 }
 
 function sysMsg(t){ addChatMsg({ type:'system', text:t }); }
+
+// ── Share / Invite link ──────────────────────────────────────
+function initShareBtn(){
+  var btn = $('btn-share');
+  if(!btn) return;
+  btn.onclick = function(){
+    var url = window.location.origin + '/room/' + encodeURIComponent(ME.room);
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(url).then(function(){
+        toast('🔗 Invite link copied!');
+        btn.textContent = '✅ Copied!';
+        setTimeout(function(){ btn.textContent = '🔗 Invite'; }, 2000);
+      });
+    } else {
+      // Fallback for older browsers
+      var ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity  = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      toast('🔗 Invite link copied!');
+      btn.textContent = '✅ Copied!';
+      setTimeout(function(){ btn.textContent = '🔗 Invite'; }, 2000);
+    }
+  };
+}
 
 function addChatMsg(m){
   var box = $('chat-msgs');

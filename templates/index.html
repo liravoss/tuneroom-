@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>TuneRoom ❄️ — Listen Together</title>
   <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon">
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#60a5fa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TuneRoom">
+  <link rel="apple-touch-icon" href="/static/img/icon-192.png">
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -52,6 +59,7 @@
     var d = document.createElement('div');
     d.className = 'color-dot'+(c===selCol?' on':'');
     d.style.background = c;
+    d.dataset.color = c;
     d.onclick = function(){
       document.querySelectorAll('.color-dot').forEach(function(x){ x.classList.remove('on'); });
       d.classList.add('on'); selCol = c;
@@ -72,12 +80,137 @@
     sessionStorage.setItem('tr_name',  name);
     sessionStorage.setItem('tr_color', selCol);
     sessionStorage.setItem('tr_room',  room);
-    window.location.href = '/room/'+encodeURIComponent(room);
+    // Smooth fade out before redirect
+    var wrap = document.querySelector('.landing-wrap');
+    var overlay = document.getElementById('bg-overlay');
+    wrap.style.transition    = 'opacity 0.5s ease, transform 0.5s ease';
+    wrap.style.opacity       = '0';
+    wrap.style.transform     = 'translateY(-20px) scale(0.97)';
+    overlay.style.transition = 'opacity 0.5s ease';
+    overlay.style.opacity    = '1';
+    setTimeout(function(){
+      window.location.href = '/room/'+encodeURIComponent(room);
+    }, 500);
   }
 
   document.getElementById('btn-join').onclick = doJoin;
   document.getElementById('m-name').onkeydown = function(e){ if(e.key==='Enter') doJoin(); };
   document.getElementById('m-room').onkeydown = function(e){ if(e.key==='Enter') doJoin(); };
+})();
+</script>
+
+<script>
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('/sw.js')
+      .then(function(){ console.log('TuneRoom SW registered'); })
+      .catch(function(e){ console.log('SW error:', e); });
+  }
+</script>
+
+<!-- PWA Install Banner -->
+<div id="pwa-banner" style="display:none">
+  <div id="pwa-banner-inner">
+    <img src="/static/img/icon-192.png" alt="">
+    <div class="pwa-text">
+      <div class="pwa-title">Install TuneRoom</div>
+      <div class="pwa-sub">Add to home screen for the best experience</div>
+    </div>
+    <button id="pwa-install">Install</button>
+    <button id="pwa-dismiss">✕</button>
+  </div>
+</div>
+
+<style>
+#pwa-banner {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  width: calc(100% - 32px);
+  max-width: 480px;
+  animation: bannerSlide 0.4s ease;
+}
+@keyframes bannerSlide {
+  from { transform: translateX(-50%) translateY(100px); opacity:0; }
+  to   { transform: translateX(-50%) translateY(0);    opacity:1; }
+}
+#pwa-banner-inner {
+  background: rgba(4,10,35,0.96);
+  border: 1px solid rgba(96,165,250,0.3);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 20px rgba(96,165,250,0.1);
+}
+#pwa-banner-inner img {
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+.pwa-text { flex: 1; }
+.pwa-title { color: #e0f2fe; font-family:'Outfit',sans-serif; font-weight:600; font-size:.9rem; }
+.pwa-sub   { color: #64748b; font-family:'Outfit',sans-serif; font-size:.75rem; margin-top:2px; }
+#pwa-install {
+  background: linear-gradient(135deg, #60a5fa, #38bdf8);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  color: #04071a;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 600;
+  font-size: .82rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity .2s;
+}
+#pwa-install:hover { opacity: .85; }
+#pwa-dismiss {
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px;
+  flex-shrink: 0;
+}
+#pwa-dismiss:hover { color: #94a3b8; }
+</style>
+
+<script>
+(function(){
+  // Only show once ever
+  if(localStorage.getItem('pwa_dismissed')) return;
+
+  var deferredPrompt = null;
+
+  window.addEventListener('beforeinstallprompt', function(e){
+    e.preventDefault();
+    deferredPrompt = e;
+    // Show banner after 3 seconds
+    setTimeout(function(){
+      document.getElementById('pwa-banner').style.display = 'block';
+    }, 3000);
+  });
+
+  document.getElementById('pwa-install').addEventListener('click', function(){
+    document.getElementById('pwa-banner').style.display = 'none';
+    localStorage.setItem('pwa_dismissed', '1');
+    if(deferredPrompt){
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then(function(){
+        deferredPrompt = null;
+      });
+    }
+  });
+
+  document.getElementById('pwa-dismiss').addEventListener('click', function(){
+    document.getElementById('pwa-banner').style.display = 'none';
+    localStorage.setItem('pwa_dismissed', '1');
+  });
 })();
 </script>
 </body>

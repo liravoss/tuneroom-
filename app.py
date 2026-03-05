@@ -1,12 +1,17 @@
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_compress import Compress
 import os, time, json, requests
 from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tuneroom-secret-2026')
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+app.config['COMPRESS_ALGORITHM'] = 'gzip'
+app.config['COMPRESS_LEVEL']     = 6
+app.config['COMPRESS_MIN_SIZE']  = 500
+Compress(app)
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent')
 
 # ─────────────────────────────────────────────────────────────
 #  UPSTASH REDIS — queue + search cache (persists forever)
@@ -115,6 +120,14 @@ def get_room(rid):
         }
     return rooms[rid]
 
+def cleanup_dead_rooms():
+    """Remove rooms from RAM that have 0 users — runs every 30 minutes."""
+    dead = [rid for rid, r in rooms.items() if len(r.get('users', {})) == 0]
+    for rid in dead:
+        del rooms[rid]
+    if dead:
+        print(f'  ❄ Cleaned {len(dead)} empty room(s) from RAM')
+
 def get_queue(rid):
     """Always get queue from Redis (source of truth)."""
     return redis_get_queue(rid)
@@ -129,6 +142,17 @@ def get_state(rid):
 @app.route('/favicon.ico')
 def favicon():
     return app.send_static_file('img/favicon.ico')
+
+@app.route('/sw.js')
+def service_worker():
+    resp = app.send_static_file('js/sw.js')
+    resp.headers['Cache-Control'] = 'no-cache'
+    resp.headers['Content-Type']  = 'application/javascript'
+    return resp
+
+@app.route('/manifest.json')
+def manifest():
+    return app.send_static_file('manifest.json')
 
 @app.route('/')
 def index():
@@ -168,16 +192,15 @@ def _search_youtube_key(q, key):
                 'maxResults': 10,
                 'key':        key
             },
-            timeout=8
+            timeout=5  # reduced from 8 — fail fast, try next
         )
         data = resp.json()
 
-        # Quota exceeded or forbidden — signal to try next key
         if 'error' in data:
             code = data['error'].get('code', 0)
             if code in (403, 429):
-                return None   # quota hit — try next
-            return []         # other error — return empty
+                return None   # quota hit
+            return None       # any error — try next key
 
         results = []
         for item in data.get('items', []):
@@ -192,12 +215,28 @@ def _search_youtube_key(q, key):
                 })
             except (KeyError, TypeError):
                 continue
-        return results
+        return results if results else None
 
-    except requests.Timeout:
-        return None
     except Exception:
         return None
+
+
+def _search_youtube_parallel(q, keys):
+    """Try all YouTube API keys simultaneously — returns first successful result."""
+    import concurrent.futures
+    if not keys:
+        return None
+    # Try all keys at once, return whichever responds first with results
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(keys), 5)) as ex:
+        futures = {ex.submit(_search_youtube_key, q, k): k for k in keys}
+        for future in concurrent.futures.as_completed(futures, timeout=6):
+            try:
+                result = future.result()
+                if result:
+                    return result
+            except Exception:
+                continue
+    return None
 
 
 def _search_invidious(q):
@@ -351,8 +390,8 @@ def api_search():
     if cached_results is not None:
         return jsonify({'source': cached_source, 'results': cached_results, 'cached': True})
 
-    # ── Try YouTube API keys in order (supports unlimited keys) ─
-    # Reads YOUTUBE_API_KEY, YOUTUBE_API_KEY_2 ... YOUTUBE_API_KEY_30
+    # ── Try all YouTube API keys simultaneously ─────────────────
+    # All keys tried in parallel — returns fastest successful result
     yt_keys = []
     base = os.environ.get('YOUTUBE_API_KEY', '').strip()
     if base: yt_keys.append(base)
@@ -360,9 +399,9 @@ def api_search():
         k = os.environ.get(f'YOUTUBE_API_KEY_{i}', '').strip()
         if k: yt_keys.append(k)
 
-    for key in yt_keys:
-        results = _search_youtube_key(q, key)
-        if results is not None:
+    if yt_keys:
+        results = _search_youtube_parallel(q, yt_keys)
+        if results:
             cache_set(q, results, 'youtube')
             return jsonify({'source': 'youtube', 'results': results})
 
@@ -391,6 +430,24 @@ def api_search():
 # ─────────────────────────────────────────────────────────────
 #  CACHE STATS  — see how much quota is being saved
 # ─────────────────────────────────────────────────────────────
+@app.route('/api/rooms/stats')
+def rooms_stats():
+    stats = []
+    for rid, r in rooms.items():
+        state = get_state(rid)
+        queue = get_queue(rid)
+        stats.append({
+            'room':          rid,
+            'users':         len(r.get('users', {})),
+            'queue_length':  len(queue),
+            'is_playing':    state['is_playing'],
+            'current_index': state['current_index'],
+        })
+    return jsonify({
+        'active_rooms': len(rooms),
+        'rooms':        stats
+    })
+
 @app.route('/api/cache/stats')
 def cache_stats():
     try:
@@ -644,14 +701,16 @@ def on_join(data):
     queue = get_queue(rid)      # from Redis
     state = get_state(rid)      # from Redis
     r['users'][request.sid] = {'username': username, 'color': color, 'sid': request.sid}
+    # Send room_state ONLY to the joining user — never broadcast to whole room
+    # Broadcasting room_state caused song restarts for everyone already in the room
     emit('room_state', {
         'queue':         queue,
-        'chat_history':  r['chat_history'][-40:],
+        'chat_history':  r['chat_history'][-20:],
         'users':         list(r['users'].values()),
         'current_index': state['current_index'],
         'is_playing':    state['is_playing'],
         'current_time':  state['current_time'],
-    })
+    }, to=request.sid)
     msg = {'type': 'system', 'text': f'{username} joined ❄️', 'ts': time.time()}
     r['chat_history'].append(msg)
     emit('chat_msg', msg, to=rid)
@@ -661,6 +720,7 @@ def on_join(data):
 
 @socketio.on('disconnect')
 def on_disconnect():
+    cleanup_dead_rooms()
     for rid, r in rooms.items():
         if request.sid in r['users']:
             user = r['users'].pop(request.sid)
@@ -727,22 +787,44 @@ def on_sync(data):
     emit('player_sync', data, to=rid, include_self=False)
 
 
+def sanitize_color(c):
+    """Allow only valid hex colors — prevents CSS injection via color field."""
+    import re
+    c = str(c or '#60a5fa').strip()
+    if re.match(r'^#[0-9a-fA-F]{3,6}$', c):
+        return c
+    return '#60a5fa'  # default ice blue
+
+def sanitize_text(t, maxlen=500):
+    """Strip HTML tags and limit length — prevents XSS via chat text."""
+    import re
+    t = str(t or '').strip()
+    t = re.sub(r'<[^>]*>', '', t)   # strip all HTML tags
+    t = t[:maxlen]                   # limit length
+    return t
+
 @socketio.on('chat_msg')
 def on_chat(data):
-    rid = data.get('room', 'main')
-    r   = get_room(rid)
-    txt = data.get('text', '').strip()
+    rid  = data.get('room', 'main')
+    r    = get_room(rid)
+    # ── Sanitize all inputs before broadcasting ──────────────
+    txt      = sanitize_text(data.get('text', ''))
+    username = sanitize_text(data.get('username', 'Anonymous'), maxlen=20)
+    color    = sanitize_color(data.get('color', '#60a5fa'))
     if not txt:
         return
     # Whisper: /w username message
     if txt.startswith('/w '):
         parts = txt.split(' ', 2)
         if len(parts) >= 3:
-            target, body = parts[1], parts[2]
+            target = sanitize_text(parts[1], maxlen=20)
+            body   = sanitize_text(parts[2])
             for sid, u in r['users'].items():
                 if u['username'].lower() == target.lower():
-                    wm = {**data, 'type': 'whisper',
+                    wm = {'type': 'whisper', 'username': username,
+                          'color': color,
                           'text': f'[whisper → {target}] {body}',
+                          'ts': time.time(),
                           'mid': f"m{time.time()}"}
                     emit('chat_msg', wm, to=sid)
                     emit('chat_msg', wm, to=request.sid)
@@ -750,8 +832,8 @@ def on_chat(data):
         return
     msg = {
         'type':     'msg',
-        'username': data.get('username'),
-        'color':    data.get('color'),
+        'username': username,
+        'color':    color,
         'text':     txt,
         'ts':       time.time(),
         'mid':      f"m{time.time()}{request.sid[:4]}"

@@ -36,21 +36,24 @@ def room(room_id):
     return render_template('room.html', room_id=room_id)
 
 # ─────────────────────────────────────────────────────────────
-#  YOUTUBE DATA API SEARCH
+#  SEARCH — YouTube API keys (rotation) + Invidious fallback
+#  Priority:
+#    1. YOUTUBE_API_KEY  (primary)
+#    2. YOUTUBE_API_KEY_2 (secondary key)
+#    3. YOUTUBE_API_KEY_3 (tertiary key)
+#    4. Invidious API    (free, no key, unlimited)
 # ─────────────────────────────────────────────────────────────
-@app.route('/api/search')
-def api_search():
-    q = request.args.get('q', '').strip()
-    if not q:
-        return jsonify({'error': 'empty query'}), 400
 
-    yt_key = os.environ.get('YOUTUBE_API_KEY', '')
-    if not yt_key:
-        return jsonify({
-            'error': 'YOUTUBE_API_KEY not set in .env file',
-            'results': []
-        }), 200
+# Multiple Invidious public instances — tries each if one is down
+INVIDIOUS_INSTANCES = [
+    'https://invidious.privacyredirect.com',
+    'https://invidious.nerdvpn.de',
+    'https://inv.tux.pizza',
+    'https://invidious.io.lol',
+]
 
+def _search_youtube_key(q, key):
+    """Search using a single YouTube Data API key. Returns list or None on quota/error."""
     try:
         resp = requests.get(
             'https://www.googleapis.com/youtube/v3/search',
@@ -59,14 +62,18 @@ def api_search():
                 'q':          q,
                 'type':       'video',
                 'maxResults': 10,
-                'key':        yt_key
+                'key':        key
             },
             timeout=8
         )
         data = resp.json()
 
+        # Quota exceeded or forbidden — signal to try next key
         if 'error' in data:
-            return jsonify({'error': data['error']['message'], 'results': []}), 200
+            code = data['error'].get('code', 0)
+            if code in (403, 429):
+                return None   # quota hit — try next
+            return []         # other error — return empty
 
         results = []
         for item in data.get('items', []):
@@ -81,13 +88,70 @@ def api_search():
                 })
             except (KeyError, TypeError):
                 continue
-
-        return jsonify({'source': 'youtube', 'results': results})
+        return results
 
     except requests.Timeout:
-        return jsonify({'error': 'Search timed out', 'results': []}), 200
-    except Exception as e:
-        return jsonify({'error': str(e), 'results': []}), 200
+        return None
+    except Exception:
+        return None
+
+
+def _search_invidious(q):
+    """Search using Invidious — free, no key needed. Tries multiple instances."""
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            resp = requests.get(
+                f'{instance}/api/v1/search',
+                params={'q': q, 'type': 'video', 'page': 1},
+                timeout=8,
+                headers={'User-Agent': 'TuneRoom/1.0'}
+            )
+            if not resp.ok:
+                continue
+            items = resp.json()
+            if not isinstance(items, list):
+                continue
+
+            results = []
+            for item in items[:10]:
+                vid = item.get('videoId', '')
+                if not vid:
+                    continue
+                results.append({
+                    'id':        vid,
+                    'title':     item.get('title', ''),
+                    'channel':   item.get('author', ''),
+                    'thumbnail': f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'
+                })
+            if results:
+                return results
+        except Exception:
+            continue
+    return None
+
+
+@app.route('/api/search')
+def api_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'error': 'empty query'}), 400
+
+    # ── Try YouTube API keys in order ──────────────────────────
+    for env_var in ['YOUTUBE_API_KEY', 'YOUTUBE_API_KEY_2', 'YOUTUBE_API_KEY_3']:
+        key = os.environ.get(env_var, '').strip()
+        if not key:
+            continue
+        results = _search_youtube_key(q, key)
+        if results is not None:
+            return jsonify({'source': 'youtube', 'results': results})
+        # None means quota hit — try next key
+
+    # ── All YouTube keys exhausted → fallback to Invidious ─────
+    results = _search_invidious(q)
+    if results:
+        return jsonify({'source': 'invidious', 'results': results})
+
+    return jsonify({'error': 'All search sources unavailable', 'results': []}), 200
 
 
 # ─────────────────────────────────────────────────────────────
@@ -472,10 +536,12 @@ def on_voice_signal(data):
 
 
 if __name__ == '__main__':
-    port   = int(os.environ.get('PORT', 5000))
-    has_yt = bool(os.environ.get('YOUTUBE_API_KEY'))
+    port = int(os.environ.get('PORT', 5000))
+    keys = [os.environ.get(k,'') for k in ['YOUTUBE_API_KEY','YOUTUBE_API_KEY_2','YOUTUBE_API_KEY_3']]
+    active_keys = sum(1 for k in keys if k)
     print(f'\n  ❄️  TuneRoom → http://localhost:{port}')
-    print(f'  YouTube search : {"✓ ON" if has_yt else "✗ set YOUTUBE_API_KEY in .env"}')
+    print(f'  YouTube keys   : {active_keys} active key(s)')
+    print(f'  Invidious      : ✓ ON (fallback, no key needed)')
     print(f'  Lyrics         : ✓ ON (5 sources)')
     print()
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)

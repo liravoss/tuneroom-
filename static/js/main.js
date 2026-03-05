@@ -91,12 +91,16 @@ function initSocket(){
 
   socket.on('player_sync', function(d){
     if(!ytReady || syncLock) return;
-    syncLock = true;
+    // Never act on a sync that says time=0 unless we are also at 0
+    // This prevents voice join / reconnects from restarting the song
     var ct = ytPlayer.getCurrentTime();
-    if(Math.abs(ct - d.current_time) > 2.5) ytPlayer.seekTo(d.current_time, true);
+    if(d.current_time === 0 && ct > 3) return;
+    syncLock = true;
+    // Only seek if meaningfully out of sync (>3s difference)
+    if(Math.abs(ct - d.current_time) > 3) ytPlayer.seekTo(d.current_time, true);
     if(d.is_playing  && ytPlayer.getPlayerState() !== YT.PlayerState.PLAYING) ytPlayer.playVideo();
     if(!d.is_playing && ytPlayer.getPlayerState() === YT.PlayerState.PLAYING) ytPlayer.pauseVideo();
-    setTimeout(function(){ syncLock = false; }, 600);
+    setTimeout(function(){ syncLock = false; }, 800);
   });
 
   socket.on('chat_msg', addChatMsg);
@@ -104,7 +108,13 @@ function initSocket(){
 
   socket.on('voice_peer_joined', function(d){
     addVoicePeer(d.sid, d.username);
-    if(voiceOn && d.sid !== socket.id) createPeer(d.sid, true);
+    // Create WebRTC peer connection — but do NOT emit player sync
+    // to avoid restarting the song for everyone
+    if(voiceOn && d.sid !== socket.id){
+      syncLock = true;  // lock sync briefly during peer setup
+      createPeer(d.sid, true);
+      setTimeout(function(){ syncLock = false; }, 2000);
+    }
   });
   socket.on('voice_peer_left', function(d){
     removePeer(d.sid); removeVoicePeer(d.sid);

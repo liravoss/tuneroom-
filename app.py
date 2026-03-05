@@ -8,16 +8,116 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tuneroom-secret-2026')
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
-rooms = {}
+# ─────────────────────────────────────────────────────────────
+#  UPSTASH REDIS — queue + search cache (persists forever)
+#  Chat stays in RAM only (intentional)
+# ─────────────────────────────────────────────────────────────
+REDIS_URL   = os.environ.get('UPSTASH_REDIS_REST_URL', '').rstrip('/')
+REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
+CACHE_TTL   = 6 * 3600   # search cache expires after 6 hours
+
+def redis_cmd(*args):
+    """Send a command to Upstash Redis REST API. Returns parsed response."""
+    if not REDIS_URL or not REDIS_TOKEN:
+        return None
+    try:
+        resp = requests.post(
+            f'{REDIS_URL}/{"/".join(str(a) for a in args)}',
+            headers={'Authorization': f'Bearer {REDIS_TOKEN}'},
+            timeout=4
+        )
+        if resp.ok:
+            return resp.json().get('result')
+    except Exception:
+        pass
+    return None
+
+# ── Queue helpers ─────────────────────────────────────────────
+def queue_key(rid):   return f'tr:queue:{rid}'
+def state_key(rid):   return f'tr:state:{rid}'
+
+def redis_get_queue(rid):
+    """Get queue for a room from Redis. Returns list."""
+    try:
+        raw = redis_cmd('GET', queue_key(rid))
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return []
+
+def redis_set_queue(rid, queue):
+    """Save queue for a room to Redis (no expiry — persists forever)."""
+    try:
+        redis_cmd('SET', queue_key(rid), json.dumps(queue))
+    except Exception:
+        pass
+
+def redis_get_state(rid):
+    """Get playback state (current_index, is_playing, current_time) from Redis."""
+    try:
+        raw = redis_cmd('GET', state_key(rid))
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return {'current_index': -1, 'is_playing': False, 'current_time': 0.0}
+
+def redis_set_state(rid, idx, is_playing, current_time):
+    """Save playback state to Redis."""
+    try:
+        redis_cmd('SET', state_key(rid), json.dumps({
+            'current_index': idx,
+            'is_playing':    is_playing,
+            'current_time':  current_time
+        }))
+    except Exception:
+        pass
+
+# ── Search cache helpers ──────────────────────────────────────
+def cache_key(q): return f'tr:cache:{q.lower().strip()}'
+
+def cache_get(q):
+    """Get cached search results. Returns (results, source) or (None, None)."""
+    try:
+        raw = redis_cmd('GET', cache_key(q))
+        if raw:
+            d = json.loads(raw)
+            return d['results'], d['source']
+    except Exception:
+        pass
+    return None, None
+
+def cache_set(q, results, source):
+    """Cache search results in Redis with 6hr TTL."""
+    try:
+        key  = cache_key(q)
+        data = json.dumps({'results': results, 'source': source})
+        redis_cmd('SET', key, data, 'EX', CACHE_TTL)
+    except Exception:
+        pass
+
+# ── Room state (users + chat stay in RAM) ────────────────────
+rooms = {}  # RAM only: users, chat_history, voice_peers
 
 def get_room(rid):
     if rid not in rooms:
+        # Load queue + state from Redis on first access
         rooms[rid] = {
-            'queue': [], 'users': {}, 'chat_history': [],
-            'voice_peers': {}, 'current_index': -1,
-            'is_playing': False, 'current_time': 0.0, 'last_sync': time.time()
+            'users':        {},
+            'chat_history': [],
+            'voice_peers':  {},
+            'last_sync':    time.time()
         }
     return rooms[rid]
+
+def get_queue(rid):
+    """Always get queue from Redis (source of truth)."""
+    return redis_get_queue(rid)
+
+def get_state(rid):
+    """Always get playback state from Redis."""
+    return redis_get_state(rid)
 
 # ─────────────────────────────────────────────────────────────
 #  PAGES
@@ -242,6 +342,11 @@ def api_search():
     if not q:
         return jsonify({'error': 'empty query'}), 400
 
+    # ── Check cache first — zero API quota used ─────────────────
+    cached_results, cached_source = cache_get(q)
+    if cached_results is not None:
+        return jsonify({'source': cached_source, 'results': cached_results, 'cached': True})
+
     # ── Try YouTube API keys in order (supports unlimited keys) ─
     # Reads YOUTUBE_API_KEY, YOUTUBE_API_KEY_2 ... YOUTUBE_API_KEY_30
     yt_keys = []
@@ -254,27 +359,44 @@ def api_search():
     for key in yt_keys:
         results = _search_youtube_key(q, key)
         if results is not None:
+            cache_set(q, results, 'youtube')
             return jsonify({'source': 'youtube', 'results': results})
-        # None means quota hit — try next key
 
-        # ── All YouTube keys exhausted → try free fallbacks ────────
-    # Fallback 1: Invidious (open YouTube frontend, no key)
+    # ── All YouTube keys exhausted → try free fallbacks ─────────
+    # Fallback 1: Invidious
     results = _search_invidious(q)
     if results:
+        cache_set(q, results, 'invidious')
         return jsonify({'source': 'invidious', 'results': results})
 
-    # Fallback 2: Piped API (another open YouTube frontend)
+    # Fallback 2: Piped API
     results = _search_piped(q)
     if results:
+        cache_set(q, results, 'piped')
         return jsonify({'source': 'piped', 'results': results})
 
     # Fallback 3: YouTube internal API (no key, always works)
     results = _search_youtube_nokey(q)
     if results:
+        cache_set(q, results, 'youtube_nokey')
         return jsonify({'source': 'youtube_nokey', 'results': results})
 
     return jsonify({'error': 'All search sources unavailable', 'results': []}), 200
 
+
+# ─────────────────────────────────────────────────────────────
+#  CACHE STATS  — see how much quota is being saved
+# ─────────────────────────────────────────────────────────────
+@app.route('/api/cache/stats')
+def cache_stats():
+    now = time.time()
+    active = {k:v for k,v in search_cache.items() if (now - v['ts']) < CACHE_TTL}
+    return jsonify({
+        'cached_queries': len(active),
+        'max_cache':      CACHE_MAX,
+        'ttl_hours':      CACHE_TTL // 3600,
+        'queries':        list(active.keys())
+    })
 
 # ─────────────────────────────────────────────────────────────
 #  LYRICS  — 5-source cascade, no API key needed
@@ -504,19 +626,21 @@ def api_playlist():
 # ─────────────────────────────────────────────────────────────
 @socketio.on('join')
 def on_join(data):
-    rid = data.get('room', 'main')
+    rid      = data.get('room', 'main')
     username = data.get('username', 'Anonymous')
     color    = data.get('color', '#60a5fa')
     join_room(rid)
-    r = get_room(rid)
+    r     = get_room(rid)
+    queue = get_queue(rid)      # from Redis
+    state = get_state(rid)      # from Redis
     r['users'][request.sid] = {'username': username, 'color': color, 'sid': request.sid}
     emit('room_state', {
-        'queue':         r['queue'],
+        'queue':         queue,
         'chat_history':  r['chat_history'][-40:],
         'users':         list(r['users'].values()),
-        'current_index': r['current_index'],
-        'is_playing':    r['is_playing'],
-        'current_time':  r['current_time'],
+        'current_index': state['current_index'],
+        'is_playing':    state['is_playing'],
+        'current_time':  state['current_time'],
     })
     msg = {'type': 'system', 'text': f'{username} joined ❄️', 'ts': time.time()}
     r['chat_history'].append(msg)
@@ -541,9 +665,8 @@ def on_disconnect():
 
 @socketio.on('add_to_queue')
 def on_add(data):
-    rid  = data.get('room', 'main')
-    r    = get_room(rid)
-    song = {
+    rid   = data.get('room', 'main')
+    song  = {
         'id':        data.get('id', ''),
         'title':     data.get('title', ''),
         'channel':   data.get('channel', ''),
@@ -551,44 +674,46 @@ def on_add(data):
         'added_by':  data.get('username', '?'),
         'qid':       f"{data.get('id','')}_{time.time()}"
     }
-    r['queue'].append(song)
-    emit('queue_updated', {'queue': r['queue']}, to=rid)
+    queue = get_queue(rid)
+    queue.append(song)
+    redis_set_queue(rid, queue)
+    emit('queue_updated', {'queue': queue}, to=rid)
 
 
 @socketio.on('remove_from_queue')
 def on_remove(data):
-    rid = data.get('room', 'main')
-    r   = get_room(rid)
-    r['queue'] = [s for s in r['queue'] if s.get('qid') != data.get('qid')]
-    emit('queue_updated', {'queue': r['queue']}, to=rid)
+    rid   = data.get('room', 'main')
+    queue = [s for s in get_queue(rid) if s.get('qid') != data.get('qid')]
+    redis_set_queue(rid, queue)
+    emit('queue_updated', {'queue': queue}, to=rid)
 
 
 @socketio.on('reorder_queue')
 def on_reorder(data):
-    rid = data.get('room', 'main')
-    r   = get_room(rid)
-    r['queue'] = data.get('queue', r['queue'])
-    emit('queue_updated', {'queue': r['queue']}, to=rid, include_self=False)
+    rid   = data.get('room', 'main')
+    queue = data.get('queue', get_queue(rid))
+    redis_set_queue(rid, queue)
+    emit('queue_updated', {'queue': queue}, to=rid, include_self=False)
 
 
 @socketio.on('play_song')
 def on_play(data):
     rid = data.get('room', 'main')
-    r   = get_room(rid)
-    r['current_index'] = data.get('index', 0)
-    r['is_playing']    = True
-    r['current_time']  = 0
-    r['last_sync']     = time.time()
-    emit('play_song', {'index': r['current_index']}, to=rid)
+    idx = data.get('index', 0)
+    redis_set_state(rid, idx, True, 0)
+    get_room(rid)['last_sync'] = time.time()
+    emit('play_song', {'index': idx}, to=rid)
 
 
 @socketio.on('player_sync')
 def on_sync(data):
     rid = data.get('room', 'main')
     r   = get_room(rid)
-    r['is_playing']   = data.get('is_playing', False)
-    r['current_time'] = data.get('current_time', 0)
-    r['last_sync']    = time.time()
+    r['last_sync'] = time.time()
+    state = get_state(rid)
+    redis_set_state(rid, state['current_index'],
+                    data.get('is_playing', False),
+                    data.get('current_time', 0))
     emit('player_sync', data, to=rid, include_self=False)
 
 

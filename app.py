@@ -6,7 +6,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tuneroom-secret-2026')
+_secret = os.environ.get('SECRET_KEY', '')
+if not _secret:
+    import secrets
+    _secret = secrets.token_hex(32)
+    print('  ⚠ SECRET_KEY not set — using random key (sessions will reset on restart)')
+app.config['SECRET_KEY'] = _secret
 app.config['COMPRESS_ALGORITHM'] = 'gzip'
 app.config['COMPRESS_LEVEL']     = 6
 app.config['COMPRESS_MIN_SIZE']  = 500
@@ -109,6 +114,14 @@ def cache_set(q, results, source):
 # ── Room state (users + chat stay in RAM) ────────────────────
 rooms = {}  # RAM only: users, chat_history, voice_peers
 
+def sanitize_room_id(rid):
+    """Allow only safe room IDs — letters, numbers, hyphens, underscores. Max 40 chars."""
+    import re
+    rid = str(rid or 'main').strip()
+    rid = re.sub(r'[^a-zA-Z0-9_-]', '', rid)  # strip unsafe chars
+    rid = rid[:40]                               # limit length
+    return rid or 'main'
+
 def get_room(rid):
     if rid not in rooms:
         # Load queue + state from Redis on first access
@@ -127,6 +140,15 @@ def cleanup_dead_rooms():
         del rooms[rid]
     if dead:
         print(f'  ❄ Cleaned {len(dead)} empty room(s) from RAM')
+
+def _start_cleanup_timer():
+    """Run dead room cleanup every 30 minutes using gevent (compatible with async_mode=gevent)."""
+    import gevent
+    def _loop():
+        while True:
+            gevent.sleep(1800)  # 30 minutes
+            cleanup_dead_rooms()
+    gevent.spawn(_loop)
 
 def get_queue(rid):
     """Always get queue from Redis (source of truth)."""
@@ -432,6 +454,10 @@ def api_search():
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/rooms/stats')
 def rooms_stats():
+    # Require secret key to view stats — prevents public snooping
+    secret = os.environ.get('STATS_KEY', '')
+    if secret and request.args.get('key') != secret:
+        return jsonify({'error': 'unauthorized'}), 403
     stats = []
     for rid, r in rooms.items():
         state = get_state(rid)
@@ -451,10 +477,17 @@ def rooms_stats():
 @app.route('/api/cache/stats')
 def cache_stats():
     try:
-        # List all cache keys from Redis
-        keys = redis_cmd('KEYS', 'tr:cache:*')
-        if not keys:
-            keys = []
+        # Use SCAN instead of KEYS — safer in production
+        keys = []
+        cursor = 0
+        while True:
+            result = redis_cmd('SCAN', cursor, 'MATCH', 'tr:cache:*', 'COUNT', 100)
+            if not result:
+                break
+            cursor = int(result[0])
+            keys.extend(result[1] if result[1] else [])
+            if cursor == 0:
+                break
         queries = [k.replace('tr:cache:', '') for k in keys]
         return jsonify({
             'cached_queries': len(queries),
@@ -566,7 +599,7 @@ def api_lyrics():
     # ── 5. chartlyrics.com (old but wide coverage) ───────────
     try:
         r = requests.get(
-            'http://api.chartlyrics.com/apiv1.asmx/SearchLyricDirect',
+            'https://api.chartlyrics.com/apiv1.asmx/SearchLyricDirect',
             params={'artist': clean_artist, 'song': clean_title},
             timeout=8
         )
@@ -693,9 +726,9 @@ def api_playlist():
 # ─────────────────────────────────────────────────────────────
 @socketio.on('join')
 def on_join(data):
-    rid      = data.get('room', 'main')
-    username = data.get('username', 'Anonymous')
-    color    = data.get('color', '#60a5fa')
+    rid      = sanitize_room_id(data.get('room', 'main'))
+    username = sanitize_text(data.get('username', 'Anonymous'), maxlen=20)
+    color    = sanitize_color(data.get('color', '#60a5fa'))
     join_room(rid)
     r     = get_room(rid)
     queue = get_queue(rid)      # from Redis
@@ -720,7 +753,6 @@ def on_join(data):
 
 @socketio.on('disconnect')
 def on_disconnect():
-    cleanup_dead_rooms()
     for rid, r in rooms.items():
         if request.sid in r['users']:
             user = r['users'].pop(request.sid)
@@ -735,16 +767,20 @@ def on_disconnect():
 
 @socketio.on('add_to_queue')
 def on_add(data):
-    rid   = data.get('room', 'main')
+    rid   = sanitize_room_id(data.get('room', 'main'))
+    raw_id = sanitize_text(str(data.get('id', '')), maxlen=20)
     song  = {
-        'id':        data.get('id', ''),
-        'title':     data.get('title', ''),
-        'channel':   data.get('channel', ''),
-        'thumbnail': data.get('thumbnail', ''),
-        'added_by':  data.get('username', '?'),
-        'qid':       f"{data.get('id','')}_{time.time()}"
+        'id':        raw_id,
+        'title':     sanitize_text(data.get('title', ''), maxlen=150),
+        'channel':   sanitize_text(data.get('channel', ''), maxlen=80),
+        'thumbnail': f'https://img.youtube.com/vi/{raw_id}/mqdefault.jpg',
+        'added_by':  sanitize_text(data.get('username', '?'), maxlen=20),
+        'qid':       f"{raw_id}_{time.time()}"
     }
     queue = get_queue(rid)
+    if len(queue) >= 200:
+        emit('toast', {'msg': '⚠ Queue is full (200 songs max)'}, to=request.sid)
+        return
     queue.append(song)
     redis_set_queue(rid, queue)
     emit('queue_updated', {'queue': queue}, to=rid)
@@ -752,24 +788,51 @@ def on_add(data):
 
 @socketio.on('remove_from_queue')
 def on_remove(data):
-    rid   = data.get('room', 'main')
-    queue = [s for s in get_queue(rid) if s.get('qid') != data.get('qid')]
+    rid      = sanitize_room_id(data.get('room', 'main'))
+    old_q    = get_queue(rid)
+    rem_qid  = data.get('qid')
+    # Find index of removed song to adjust current_index
+    rem_pos  = next((i for i,s in enumerate(old_q) if s.get('qid') == rem_qid), -1)
+    queue    = [s for s in old_q if s.get('qid') != rem_qid]
     redis_set_queue(rid, queue)
-    emit('queue_updated', {'queue': queue}, to=rid)
+    # Adjust current_index if needed
+    state    = get_state(rid)
+    cur      = state['current_index']
+    if rem_pos >= 0 and rem_pos < cur:
+        # Removed song was before current — shift index back
+        cur = max(0, cur - 1)
+        redis_set_state(rid, cur, state['is_playing'], state['current_time'])
+    elif rem_pos == cur:
+        # Removed the currently playing song
+        cur = min(cur, len(queue) - 1)
+        redis_set_state(rid, cur, False, 0)
+    emit('queue_updated', {'queue': queue, 'current_index': cur}, to=rid)
 
 
 @socketio.on('reorder_queue')
 def on_reorder(data):
-    rid   = data.get('room', 'main')
+    rid   = sanitize_room_id(data.get('room', 'main'))
     queue = data.get('queue', get_queue(rid))
     redis_set_queue(rid, queue)
+    # If queue was cleared, reset playback state in Redis too
+    if len(queue) == 0:
+        redis_set_state(rid, -1, False, 0)
     emit('queue_updated', {'queue': queue}, to=rid, include_self=False)
 
 
 @socketio.on('play_song')
 def on_play(data):
-    rid = data.get('room', 'main')
-    idx = data.get('index', 0)
+    rid   = sanitize_room_id(data.get('room', 'main'))
+    queue = get_queue(rid)
+    try:
+        idx = int(data.get('index', 0))
+    except (TypeError, ValueError):
+        idx = 0
+    # Clamp index to valid queue range
+    if queue:
+        idx = max(0, min(idx, len(queue) - 1))
+    else:
+        idx = -1
     redis_set_state(rid, idx, True, 0)
     get_room(rid)['last_sync'] = time.time()
     emit('play_song', {'index': idx}, to=rid)
@@ -777,14 +840,18 @@ def on_play(data):
 
 @socketio.on('player_sync')
 def on_sync(data):
-    rid = data.get('room', 'main')
+    rid = sanitize_room_id(data.get('room', 'main'))
     r   = get_room(rid)
     r['last_sync'] = time.time()
     state = get_state(rid)
     redis_set_state(rid, state['current_index'],
                     data.get('is_playing', False),
                     data.get('current_time', 0))
-    emit('player_sync', data, to=rid, include_self=False)
+    emit('player_sync', {
+        'room':         rid,
+        'is_playing':   bool(data.get('is_playing', False)),
+        'current_time': float(data.get('current_time', 0)),
+    }, to=rid, include_self=False)
 
 
 def sanitize_color(c):
@@ -805,7 +872,7 @@ def sanitize_text(t, maxlen=500):
 
 @socketio.on('chat_msg')
 def on_chat(data):
-    rid  = data.get('room', 'main')
+    rid  = sanitize_room_id(data.get('room', 'main'))
     r    = get_room(rid)
     # ── Sanitize all inputs before broadcasting ──────────────
     txt      = sanitize_text(data.get('text', ''))
@@ -846,23 +913,29 @@ def on_chat(data):
 
 @socketio.on('reaction')
 def on_reaction(data):
-    emit('reaction', data, to=data.get('room', 'main'))
+    rid = sanitize_room_id(data.get('room', 'main'))
+    # Only forward safe fields — never raw data
+    emit('reaction', {
+        'mid':   sanitize_text(str(data.get('mid', '')), maxlen=40),
+        'emoji': sanitize_text(str(data.get('emoji', '')), maxlen=10),
+    }, to=rid)
 
 
 @socketio.on('voice_join')
 def on_voice_join(data):
-    rid = data.get('room', 'main')
+    rid = sanitize_room_id(data.get('room', 'main'))
     r   = get_room(rid)
-    r['voice_peers'][request.sid] = data.get('username')
+    clean_username = sanitize_text(data.get('username', 'Anonymous'), maxlen=20)
+    r['voice_peers'][request.sid] = clean_username
     emit('voice_peer_joined', {
-        'sid': request.sid, 'username': data.get('username'),
+        'sid': request.sid, 'username': clean_username,
         'existing': list(r['voice_peers'].keys())
     }, to=rid)
 
 
 @socketio.on('voice_leave')
 def on_voice_leave(data):
-    rid = data.get('room', 'main')
+    rid = sanitize_room_id(data.get('room', 'main'))
     r   = get_room(rid)
     r['voice_peers'].pop(request.sid, None)
     emit('voice_peer_left', {'sid': request.sid}, to=rid)
@@ -870,11 +943,17 @@ def on_voice_leave(data):
 
 @socketio.on('voice_signal')
 def on_voice_signal(data):
-    emit('voice_signal', {'from': request.sid, 'signal': data.get('signal')},
-         to=data.get('target'))
+    rid    = sanitize_room_id(data.get('room', 'main'))
+    target = data.get('target')
+    r      = get_room(rid)
+    # Only forward to targets that are actually in the same room
+    if target and target in r['users']:
+        emit('voice_signal', {'from': request.sid, 'signal': data.get('signal')},
+             to=target)
 
 
 if __name__ == '__main__':
+    _start_cleanup_timer()
     port = int(os.environ.get('PORT', 5000))
     keys = [os.environ.get('YOUTUBE_API_KEY','').strip()]
     keys += [os.environ.get(f'YOUTUBE_API_KEY_{i}','').strip() for i in range(2,31)]

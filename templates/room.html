@@ -51,8 +51,7 @@
     </div>
     <div class="hdr-right">
       <span id="u-count">1 jamming ❄️</span>
-      <span class="badge" id="room-badge">Room: main</span>
-      <button id="btn-share" title="Copy invite link">🔗 Invite</button>
+      <button id="btn-share" title="Copy invite link" style="display:none">🔗 Invite</button>
     </div>
   </header>
 
@@ -139,6 +138,22 @@
   <button class="mob-tab active" data-tab="player">▶ Player</button>
   <button class="mob-tab" data-tab="queue">♫ Queue</button>
   <button class="mob-tab" data-tab="chat">💬 Chat</button>
+  <button class="mob-tab" id="mob-share-btn">🔗 Invite</button>
+</div>
+
+<!-- Share modal -->
+<div id="share-modal">
+  <div id="share-card">
+    <div id="share-title">Invite to Room</div>
+    <div id="share-link-wrap">
+      <span id="share-link-text"></span>
+    </div>
+    <div id="share-actions">
+      <button id="share-copy-btn">📋 Copy Link</button>
+      <button id="share-native-btn">↗ Share</button>
+    </div>
+    <button id="share-close-btn">✕</button>
+  </div>
 </div>
 
 <div id="toast"></div>

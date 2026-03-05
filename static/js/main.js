@@ -158,6 +158,8 @@ window.onYouTubeIframeAPIReady = function(){
           if(!isJoining) emitSync();
         } else if(e.data===S.PAUSED){
           $('btn-pp').textContent='▶';
+          // cancel any pending retry when the user (or a sync) pauses playback
+          clearRetry();
           if(!isJoining) emitSync();
         } else if(e.data===S.ENDED){
           if(!isJoining) nextSong();
@@ -202,7 +204,9 @@ function scheduleRetry(){
   if(retryCount>=3){ retryCount=0; toast('⏭ Skipping unplayable video'); nextSong(); return; }
   clearRetry();
   retryTimer=setTimeout(function(){
+    // don't retry if we've since paused (manual or via sync)
     if(isJoining||!queue[curIdx]) return;
+    if(ytPlayer && ytPlayer.getPlayerState()===YT.PlayerState.PAUSED) return;
     retryCount++; ytPlayer.loadVideoById(queue[curIdx].id);
   },3000);
 }

@@ -147,19 +147,7 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 #btn-search:hover { opacity:.85; }
 
 .hdr-right { display:flex;align-items:center;gap:8px;flex-shrink:0; }
-#btn-share {
-  background: rgba(96,165,250,0.1);
-  border: 1px solid rgba(96,165,250,0.25);
-  border-radius: 8px;
-  color: #93c5fd;
-  font-size: .78rem;
-  padding: 5px 10px;
-  cursor: pointer;
-  font-family: 'Outfit', sans-serif;
-  transition: background .2s, border-color .2s;
-  white-space: nowrap;
-}
-#btn-share:hover { background: rgba(96,165,250,0.2); border-color: rgba(96,165,250,0.5); }
+
 .badge { font-size:.68rem;background:var(--glass);border:1px solid var(--bord);border-radius:20px;padding:3px 10px;color:var(--dim); }
 #u-count { font-size:.74rem;color:var(--ice2); }
 

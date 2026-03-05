@@ -53,7 +53,7 @@ function doJoin(){
   modal.classList.add('modal-exit');
   setTimeout(function(){
     modal.style.display='none'; app.style.display='grid'; app.classList.add('app-enter');
-    wireButtons(); initShareBtn(); initSocket(); sysMsg(ME.name+' joined ❄️');
+    wireButtons(); initSocket(); sysMsg(ME.name+' joined ❄️');
     if(typeof initMobileTabs==='function') initMobileTabs();
   }, 380);
 }
@@ -403,33 +403,7 @@ function applyReact(mid,emoji){
   else { var b=document.createElement('button'); b.className='react-btn'; b.dataset.e=emoji; b.dataset.c=1; b.textContent=emoji+' 1'; b.onclick=function(){ applyReact(mid,emoji); }; rx.appendChild(b); }
 }
 
-// ── Share modal ───────────────────────────────────────────────
-function initShareBtn(){
-  var mobBtn=$('mob-share-btn'); if(!mobBtn) return;
-  function getUrl(){ return window.location.origin+'/room/'+encodeURIComponent(ME.room); }
-  function openModal(){ var m=$('share-modal'),l=$('share-link-text'); if(!m||!l) return; l.textContent=getUrl(); m.classList.add('open'); }
-  function closeModal(){ var m=$('share-modal'); if(m) m.classList.remove('open'); }
-  mobBtn.onclick=openModal;
-  var modal=$('share-modal');
-  if(modal) modal.addEventListener('click',function(e){ if(e.target===modal) closeModal(); });
-  var closeBtn=$('share-close-btn'); if(closeBtn) closeBtn.onclick=closeModal;
-  var copyBtn=$('share-copy-btn');
-  if(copyBtn) copyBtn.onclick=function(){
-    var url=getUrl();
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(url).then(function(){ copyBtn.textContent='✅ Copied!'; setTimeout(function(){ copyBtn.textContent='📋 Copy Link'; },2000); });
-    } else {
-      var ta=document.createElement('textarea'); ta.value=url; ta.style.position='fixed'; ta.style.opacity='0';
-      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-      copyBtn.textContent='✅ Copied!'; setTimeout(function(){ copyBtn.textContent='📋 Copy Link'; },2000);
-    }
-  };
-  var nativeBtn=$('share-native-btn');
-  if(nativeBtn) nativeBtn.onclick=function(){
-    if(navigator.share){ navigator.share({ title:'Join TuneRoom',text:'Join me on TuneRoom 🎵',url:getUrl() }).catch(function(){}); }
-    else if(copyBtn) copyBtn.click();
-  };
-}
+
 
 // ── Queue controls ────────────────────────────────────────────
 function clearQueue(){
@@ -531,7 +505,6 @@ function initMobileTabs(){
   document.querySelectorAll('.mob-tab[data-tab]').forEach(function(btn){
     btn.onclick=function(){ switchMobTab(btn.dataset.tab); };
   });
-  // Wire share button — it has no data-tab, handled by initShareBtn inside IIFE
 }
 function switchMobTab(tab){
   document.querySelectorAll('.mob-tab').forEach(function(b){ b.classList.remove('active'); });

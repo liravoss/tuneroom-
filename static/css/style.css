@@ -413,3 +413,145 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   #panel-chat  { border-left:none;border-top:1px solid var(--bord); }
   #search-results { left:0;right:0; }
 }
+
+/* ════════════════════════════════════════
+   MOBILE  (≤ 768px)
+   PC layout untouched above this point
+   ════════════════════════════════════════ */
+@media (max-width: 768px) {
+
+  /* ── Lock body, no scroll ── */
+  html, body { overflow: hidden; height: 100%; }
+
+  /* ── App grid → single column, leave room for bottom nav ── */
+  #app {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 52px 1fr !important;
+    height: calc(100vh - 58px) !important;
+  }
+
+  /* ── Header compact ── */
+  header {
+    padding: 0 10px;
+    gap: 7px;
+  }
+  .logo { font-size: .75rem; letter-spacing: 1px; }
+  .logo-wolf-sm { width: 24px; height: 24px; }
+  .hdr-right { display: none; } /* hide user count on mobile */
+
+  .search-bar { max-width: unset; }
+  .search-bar input { font-size: .78rem; padding: 6px 9px; }
+  #btn-search { padding: 6px 10px; font-size: .76rem; }
+
+  /* ── Search results full width ── */
+  #search-results { left: 0 !important; right: 0 !important; top: 52px; }
+
+  /* ── All panels hidden by default, shown via tabs ── */
+  #panel-queue,
+  #panel-player,
+  #panel-chat {
+    display: none !important;
+    position: absolute;
+    top: 52px;
+    left: 0; right: 0;
+    bottom: 58px;
+    border: none !important;
+    border-radius: 0 !important;
+    overflow-y: auto;
+  }
+
+  /* ── Active tab panel shown ── */
+  #panel-queue.mob-active,
+  #panel-player.mob-active,
+  #panel-chat.mob-active {
+    display: flex !important;
+    flex-direction: column;
+  }
+
+  /* ── Player panel mobile ── */
+  #panel-player {
+    align-items: center;
+    justify-content: flex-start;
+    padding: 12px 14px;
+    gap: 10px;
+    overflow-y: auto;
+  }
+  #yt-wrap {
+    width: 100% !important;
+    max-width: 100% !important;
+    aspect-ratio: 16/9;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+  #now-playing { max-width: 100%; }
+  #np-title    { font-size: .85rem; }
+  #np-channel  { font-size: .7rem; }
+
+  #player-ctrls { gap: 10px; }
+  .ctrl-btn  { width: 40px; height: 40px; }
+  #btn-pp    { width: 50px; height: 50px; font-size: 1.1rem; }
+
+  #extra-ctrls { gap: 6px; flex-wrap: wrap; justify-content: center; }
+  #paste-bar   { max-width: 100%; }
+  #paste-inp   { font-size: .78rem; }
+
+  /* ── Lyrics panel on mobile ── */
+  #lyrics-panel { border-radius: 0; }
+
+  /* ── Queue panel mobile ── */
+  #panel-queue {
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+  }
+  .panel-title-row { padding: 10px 12px; }
+  #playlist-bar { padding: 6px 8px; }
+  #playlist-inp { font-size: .72rem; }
+
+  /* ── Chat panel mobile ── */
+  #panel-chat {
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+  }
+  #chat-msgs { flex: 1; }
+  #voice-section { flex-shrink: 0; }
+
+  /* ── Bottom navigation bar ── */
+  #mob-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 58px;
+    background: rgba(4,7,26,0.97);
+    border-top: 1px solid rgba(96,165,250,0.2);
+    backdrop-filter: blur(24px);
+    z-index: 500;
+  }
+  .mob-tab {
+    flex: 1;
+    background: none;
+    border: none;
+    color: rgba(147,197,253,0.45);
+    font-family: 'Outfit', sans-serif;
+    font-size: .72rem;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    transition: color .2s;
+    border-top: 2px solid transparent;
+    padding-bottom: 4px;
+  }
+  .mob-tab.active {
+    color: var(--ice2);
+    border-top-color: var(--ice1);
+  }
+  .mob-tab:active { opacity: .7; }
+}
+
+/* ── Hide mob-nav on desktop ── */
+@media (min-width: 769px) {
+  #mob-nav { display: none; }
+}

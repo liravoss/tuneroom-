@@ -736,3 +736,103 @@ window.addEventListener('DOMContentLoaded', function(){
 });
 
 })();
+
+// ════════════════════════════════════════
+//  MOBILE TAB SWITCHING
+// ════════════════════════════════════════
+function isMobile(){ return window.innerWidth <= 768; }
+
+function initMobileTabs(){
+  if(!isMobile()) return;
+
+  // Show player tab by default
+  switchMobTab('player');
+
+  document.querySelectorAll('.mob-tab').forEach(function(btn){
+    btn.onclick = function(){
+      switchMobTab(btn.dataset.tab);
+    };
+  });
+}
+
+function switchMobTab(tab){
+  // Deactivate all
+  document.querySelectorAll('.mob-tab').forEach(function(b){ b.classList.remove('active'); });
+  document.querySelectorAll('#panel-queue,#panel-player,#panel-chat').forEach(function(p){
+    p.classList.remove('mob-active');
+  });
+
+  // Activate selected
+  var btn = document.querySelector('.mob-tab[data-tab="'+tab+'"]');
+  if(btn) btn.classList.add('active');
+
+  var map = { player:'panel-player', queue:'panel-queue', chat:'panel-chat' };
+  var panel = document.getElementById(map[tab]);
+  if(panel) panel.classList.add('mob-active');
+}
+
+// ════════════════════════════════════════
+//  MOBILE BACKGROUND AUDIO FIX
+//  iOS/Android kill audio on app switch.
+//  Workaround: use Web Audio API to keep
+//  audio context alive + re-trigger play.
+// ════════════════════════════════════════
+var audioCtx = null;
+var bgNode   = null;
+
+function initAudioContext(){
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Create a silent oscillator to keep audio context alive
+    bgNode = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    gain.gain.value = 0.00001; // nearly silent
+    bgNode.connect(gain);
+    gain.connect(audioCtx.destination);
+    bgNode.start();
+  } catch(e){}
+}
+
+// Resume audio context on any user interaction (iOS requirement)
+function resumeAudio(){
+  if(audioCtx && audioCtx.state === 'suspended'){
+    audioCtx.resume();
+  }
+}
+
+document.addEventListener('touchstart',  resumeAudio, { passive: true });
+document.addEventListener('touchend',    resumeAudio, { passive: true });
+document.addEventListener('click',       resumeAudio, { passive: true });
+
+// Re-trigger YouTube playback when tab becomes visible again
+document.addEventListener('visibilitychange', function(){
+  if(!ytReady || !ytPlayer) return;
+  if(!document.hidden){
+    // Coming back from background — if was playing, ensure it resumes
+    setTimeout(function(){
+      try {
+        var st = ytPlayer.getPlayerState();
+        if(st === YT.PlayerState.PAUSED || st === -1){
+          if(currentSong) ytPlayer.playVideo();
+        }
+      } catch(e){}
+    }, 500);
+    document.title = 'TuneRoom ❄️';
+  } else {
+    if(currentSong) document.title = '▶ ' + currentSong.title + ' — TuneRoom';
+  }
+});
+
+// Init on load
+window.addEventListener('load', function(){
+  initAudioContext();
+  initMobileTabs();
+});
+
+// Re-init if window resizes (rotation)
+window.addEventListener('resize', function(){
+  if(isMobile()){
+    var active = document.querySelector('.mob-tab.active');
+    if(!active) switchMobTab('player');
+  }
+});

@@ -197,10 +197,14 @@ def room(room_id):
 
 # Multiple Invidious public instances — tries each if one is down
 INVIDIOUS_INSTANCES = [
+    'https://inv.nadeko.net',
     'https://invidious.privacyredirect.com',
     'https://invidious.nerdvpn.de',
     'https://inv.tux.pizza',
     'https://invidious.io.lol',
+    'https://invidious.fdn.fr',
+    'https://iv.melmac.space',
+    'https://invidious.perennialte.ch',
 ]
 
 def _search_youtube_key(q, key):
@@ -303,6 +307,9 @@ PIPED_INSTANCES = [
     'https://piped-api.garudalinux.org',
     'https://api.piped.yt',
     'https://pipedapi.in.projectsegfau.lt',
+    'https://piped.video/api',
+    'https://pipedapi.drgns.space',
+    'https://pipedapi.kescher.at',
 ]
 
 def _search_piped(q):
@@ -1030,61 +1037,58 @@ def api_download():
     if not video_id:
         return jsonify({'error': 'No video ID'}), 400
 
-    # Try Invidious instances to get stream URLs
     stream_url  = None
     video_title = video_id
+    errors      = []
 
+    # ── Try Invidious instances ──────────────────────────────────
     for instance in INVIDIOUS_INSTANCES:
         try:
             resp = requests.get(
                 f'{instance}/api/v1/videos/{video_id}',
-                params={'fields': 'title,adaptiveFormats,formatStreams'},
                 timeout=8,
                 headers={'User-Agent': 'Mozilla/5.0'}
             )
             if not resp.ok:
+                errors.append(f'Invidious {instance}: HTTP {resp.status_code}')
                 continue
             data = resp.json()
+            if 'error' in data:
+                errors.append(f'Invidious {instance}: {data["error"]}')
+                continue
             video_title = data.get('title', video_id)
 
             if fmt == 'mp3':
-                # Pick best audio stream
-                audio_streams = [
-                    s for s in data.get('adaptiveFormats', [])
-                    if s.get('type', '').startswith('audio/')
-                ]
-                # Sort by bitrate descending
-                audio_streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
-                # Pick closest to requested quality
-                qual_map = {'320': 0, '192': 1, '128': 2}
-                idx = qual_map.get(qual, 0)
-                if audio_streams:
-                    idx = min(idx, len(audio_streams) - 1)
-                    stream_url = audio_streams[idx].get('url')
+                streams = [s for s in data.get('adaptiveFormats', []) if s.get('type','').startswith('audio/')]
+                streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
+                qual_idx = {'320': 0, '192': 1, '128': 2}
+                idx = min(qual_idx.get(qual, 0), max(len(streams)-1, 0))
+                if streams:
+                    stream_url = streams[idx].get('url')
             else:
-                # Pick best combined stream at requested quality
-                # formatStreams are pre-muxed (video+audio, no ffmpeg needed)
                 combined = data.get('formatStreams', [])
                 qual_int = int(qual)
-                # Find closest quality <= requested
                 best = None
                 for s in combined:
-                    h = int(s.get('resolution', '0p').replace('p', '') or 0)
+                    h = int(s.get('resolution','0p').replace('p','') or 0)
                     if h <= qual_int:
-                        if best is None or h > int(best.get('resolution', '0p').replace('p', '') or 0):
+                        if best is None or h > int(best.get('resolution','0p').replace('p','') or 0):
                             best = s
+                if not best and combined:
+                    best = combined[0]
                 if best:
                     stream_url = best.get('url')
-                elif combined:
-                    stream_url = combined[0].get('url')
 
             if stream_url:
+                print(f'[download] Got stream from Invidious: {instance}', flush=True)
                 break
-
-        except Exception:
+            else:
+                errors.append(f'Invidious {instance}: no stream found in response')
+        except Exception as e:
+            errors.append(f'Invidious {instance}: {e}')
             continue
 
-    # Fallback: try Piped if Invidious failed
+    # ── Try Piped instances ──────────────────────────────────────
     if not stream_url:
         for instance in PIPED_INSTANCES:
             try:
@@ -1094,49 +1098,56 @@ def api_download():
                     headers={'User-Agent': 'Mozilla/5.0'}
                 )
                 if not resp.ok:
+                    errors.append(f'Piped {instance}: HTTP {resp.status_code}')
                     continue
                 data = resp.json()
+                if 'error' in data:
+                    errors.append(f'Piped {instance}: {data["error"]}')
+                    continue
                 video_title = data.get('title', video_id)
 
                 if fmt == 'mp3':
                     streams = data.get('audioStreams', [])
                     streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
-                    qual_map = {'320': 0, '192': 1, '128': 2}
-                    idx = min(qual_map.get(qual, 0), max(len(streams) - 1, 0))
+                    qual_idx = {'320': 0, '192': 1, '128': 2}
+                    idx = min(qual_idx.get(qual, 0), max(len(streams)-1, 0))
                     if streams:
                         stream_url = streams[idx].get('url')
                 else:
-                    streams = data.get('videoStreams', [])
+                    streams = [s for s in data.get('videoStreams', []) if not s.get('videoOnly', True)]
                     qual_int = int(qual)
                     best = None
                     for s in streams:
                         h = s.get('height', 0) or 0
-                        # Only use muxed streams (have audio) — Piped marks them
-                        if not s.get('videoOnly', True) and h <= qual_int:
+                        if h <= qual_int:
                             if best is None or h > (best.get('height') or 0):
                                 best = s
+                    if not best and streams:
+                        best = streams[0]
                     if best:
                         stream_url = best.get('url')
 
                 if stream_url:
+                    print(f'[download] Got stream from Piped: {instance}', flush=True)
                     break
-            except Exception:
+                else:
+                    errors.append(f'Piped {instance}: no stream found in response')
+            except Exception as e:
+                errors.append(f'Piped {instance}: {e}')
                 continue
 
     if not stream_url:
-        return jsonify({'error': 'Could not get stream URL — all sources failed'}), 502
+        print(f'[download] All sources failed for {video_id}: {errors}', flush=True)
+        return jsonify({'error': 'Could not get stream URL', 'details': errors}), 502
 
-    # Clean filename
     safe_title = ''.join(c if c.isalnum() or c in ' _-' else '_' for c in video_title)
     ext = 'mp3' if fmt == 'mp3' else 'mp4'
     filename = f'{safe_title}.{ext}'
 
-    # Redirect browser directly to the stream URL with download header
-    # The stream server handles the actual file transfer — no load on our server
     from flask import redirect
-    resp = redirect(stream_url, code=302)
-    resp.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-    return resp
+    r = redirect(stream_url, code=302)
+    r.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return r
 
 
 if __name__ == '__main__':

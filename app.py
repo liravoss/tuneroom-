@@ -780,6 +780,10 @@ def on_join(data):
         'is_playing':    state['is_playing'],
         'current_time':  state['current_time'],
     }, to=request.sid)
+    # If a song is actively playing, ask existing members to report their
+    # real current_time — Redis may be stale by several seconds
+    if state['is_playing'] and state['current_index'] >= 0:
+        emit('request_sync', {'for_sid': request.sid}, to=rid, include_self=False)
     msg = {'type': 'system', 'text': f'{username} joined ❄️', 'ts': time.time()}
     r['chat_history'].append(msg)
     emit('chat_msg', msg, to=rid)
@@ -872,6 +876,20 @@ def on_play(data):
     redis_set_state(rid, idx, True, 0)
     get_room(rid)['last_sync'] = time.time()
     emit('play_song', {'index': idx}, to=rid)
+
+
+@socketio.on('sync_reply')
+def on_sync_reply(data):
+    """Existing member reports their real current_time for a joining user."""
+    rid        = sanitize_room_id(data.get('room', 'main'))
+    target_sid = data.get('for_sid', '')
+    r          = get_room(rid)
+    # Only forward to the target if they're still in the room
+    if target_sid and target_sid in r['users']:
+        emit('sync_from_peer', {
+            'current_time': float(data.get('current_time', 0)),
+            'is_playing':   bool(data.get('is_playing', True)),
+        }, to=target_sid)
 
 
 @socketio.on('player_sync')
@@ -984,3 +1002,4 @@ if __name__ == '__main__':
     print(f'  Lyrics         : ✓ ON (5 sources)')
     print()
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+    

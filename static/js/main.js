@@ -112,6 +112,29 @@ function initSocket(){
   socket.on('toast',    function(d){ toast(d.msg||''); });
   socket.on('reaction', function(d){ applyReact(d.mid,d.emoji); });
 
+  // Existing member: someone joined while song is playing — report real time
+  socket.on('request_sync', function(d){
+    if(!ytReady||!ytPlayer||isJoining) return;
+    var st = ytPlayer.getPlayerState();
+    socket.emit('sync_reply',{
+      room:       ME.room,
+      for_sid:    d.for_sid,
+      current_time: ytPlayer.getCurrentTime(),
+      is_playing: st===YT.PlayerState.PLAYING
+    });
+  });
+
+  // New user: received fresh current_time from an existing peer — seek to it
+  socket.on('sync_from_peer', function(d){
+    if(!ytReady||!ytPlayer) return;
+    // Add another small buffer since there's still some network delay
+    var target = (parseFloat(d.current_time)||0) + 0.8;
+    waitForPlayer(function(){
+      ytPlayer.seekTo(target, true);
+      if(d.is_playing) ytPlayer.playVideo();
+    });
+  });
+
   socket.on('voice_peer_joined', function(d){
     addVoicePeer(d.sid,d.username);
     if(voiceOn && d.sid!==socket.id) createPeer(d.sid,true);
@@ -182,8 +205,10 @@ window.onYouTubeIframeAPIReady = function(){
 function joinSync(videoId, seekSec, roomIsPlaying){
   isJoining = true;
   seekSec = Math.max(0, parseFloat(seekSec)||0);
+  // Add ~1.5s buffer to compensate for load time so new user lands in sync
+  var buffered = roomIsPlaying ? seekSec + 1.5 : seekSec;
   waitForPlayer(function(){
-    ytPlayer.loadVideoById({ videoId:videoId, startSeconds:Math.floor(seekSec) });
+    ytPlayer.loadVideoById({ videoId:videoId, startSeconds:Math.floor(buffered) });
     var done=false;
     var t=setInterval(function(){
       if(done) return;
@@ -195,21 +220,25 @@ function joinSync(videoId, seekSec, roomIsPlaying){
         done=true; clearInterval(t); isJoining=false;
       }
     },200);
-    // Safety — 2.5s so mobile autoplay block never gets stuck
-    setTimeout(function(){ if(!done){ clearInterval(t); isJoining=false; } },2500);
+    // Increased to 6s safety timeout for slow connections
+    setTimeout(function(){ if(!done){ clearInterval(t); isJoining=false; } },6000);
   });
 }
 
 // ── Retry on real playback failure ───────────────────────────
 function scheduleRetry(){
-  if(retryCount>=3){ retryCount=0; toast('⏭ Skipping unplayable video'); nextSong(); return; }
+  if(retryCount>=5){ retryCount=0; toast('⏭ Skipping unplayable video'); nextSong(); return; }
   clearRetry();
+  // Progressive delay: 2s, 3s, 4s, 5s, 6s per attempt
+  var delay = (retryCount + 1) * 1000 + 1000;
   retryTimer=setTimeout(function(){
     // don't retry if we've since paused (manual or via sync)
     if(isJoining||!queue[curIdx]) return;
     if(ytPlayer && ytPlayer.getPlayerState()===YT.PlayerState.PAUSED) return;
-    retryCount++; ytPlayer.loadVideoById(queue[curIdx].id);
-  },3000);
+    retryCount++;
+    toast('⟳ Retrying… (' + retryCount + '/5)');
+    ytPlayer.loadVideoById(queue[curIdx].id);
+  }, delay);
 }
 function clearRetry(){ if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; } }
 

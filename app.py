@@ -1095,7 +1095,14 @@ def _get_stream_ytdlp(video_id, fmt, qual):
     if not cookies_path.exists():
         cookies_path = pathlib.Path(__file__).parent / 'cookies.txt'
     print(f'[yt-dlp] cookies path: {cookies_path} | exists: {cookies_path.exists()}', flush=True)
-    base_cmd = ['yt-dlp', '--no-playlist', '--no-warnings']
+
+    base_cmd = [
+        'yt-dlp',
+        '--no-playlist',
+        '--no-warnings',
+        '--extractor-args', 'youtube:player_client=web,mweb,ios',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    ]
     if cookies_path.exists():
         base_cmd += ['--cookies', str(cookies_path)]
         print('[yt-dlp] using cookies.txt', flush=True)

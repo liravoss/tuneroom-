@@ -1024,69 +1024,119 @@ def on_voice_signal(data):
 @app.route('/api/download')
 def api_download():
     video_id = request.args.get('id', '').strip()
-    fmt      = request.args.get('fmt', 'mp4').strip()   # mp4 or mp3
-    qual     = request.args.get('qual', '720').strip()  # 360/720/1080 or 128/192/320
+    fmt      = request.args.get('fmt', 'mp4').strip()
+    qual     = request.args.get('qual', '720').strip()
 
     if not video_id:
         return jsonify({'error': 'No video ID'}), 400
 
-    yt_url = f'https://www.youtube.com/watch?v={video_id}'
+    # Try Invidious instances to get stream URLs
+    stream_url  = None
+    video_title = video_id
 
-    # Build yt-dlp format selector
-    if fmt == 'mp3':
-        abr = qual  # kbps
-        ydl_format  = 'bestaudio/best'
-        postprocess = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': abr}]
-        ext = 'mp3'
-    else:
-        h = qual  # e.g. 720
-        ydl_format  = f'bestvideo[height<={h}]+bestaudio/best[height<={h}]'
-        postprocess = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
-        ext = 'mp4'
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            resp = requests.get(
+                f'{instance}/api/v1/videos/{video_id}',
+                params={'fields': 'title,adaptiveFormats,formatStreams'},
+                timeout=8,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if not resp.ok:
+                continue
+            data = resp.json()
+            video_title = data.get('title', video_id)
 
-    try:
-        import yt_dlp, tempfile, glob
-        with tempfile.TemporaryDirectory() as tmp:
-            out_tmpl = f'{tmp}/%(title)s.%(ext)s'
-            ydl_opts = {
-                'format':            ydl_format,
-                'outtmpl':           out_tmpl,
-                'postprocessors':    postprocess,
-                'quiet':             True,
-                'no_warnings':       True,
-                'merge_output_format': ext,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(yt_url, download=True)
-                title = info.get('title', video_id)
+            if fmt == 'mp3':
+                # Pick best audio stream
+                audio_streams = [
+                    s for s in data.get('adaptiveFormats', [])
+                    if s.get('type', '').startswith('audio/')
+                ]
+                # Sort by bitrate descending
+                audio_streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
+                # Pick closest to requested quality
+                qual_map = {'320': 0, '192': 1, '128': 2}
+                idx = qual_map.get(qual, 0)
+                if audio_streams:
+                    idx = min(idx, len(audio_streams) - 1)
+                    stream_url = audio_streams[idx].get('url')
+            else:
+                # Pick best combined stream at requested quality
+                # formatStreams are pre-muxed (video+audio, no ffmpeg needed)
+                combined = data.get('formatStreams', [])
+                qual_int = int(qual)
+                # Find closest quality <= requested
+                best = None
+                for s in combined:
+                    h = int(s.get('resolution', '0p').replace('p', '') or 0)
+                    if h <= qual_int:
+                        if best is None or h > int(best.get('resolution', '0p').replace('p', '') or 0):
+                            best = s
+                if best:
+                    stream_url = best.get('url')
+                elif combined:
+                    stream_url = combined[0].get('url')
 
-            files = glob.glob(f'{tmp}/*.{ext}')
-            if not files:
-                # fallback — grab any file
-                files = glob.glob(f'{tmp}/*')
-            if not files:
-                return jsonify({'error': 'Download produced no file'}), 500
+            if stream_url:
+                break
 
-            filepath = files[0]
-            safe_title = ''.join(c if c.isalnum() or c in ' _-' else '_' for c in title)
-            filename = f'{safe_title}.{ext}'
+        except Exception:
+            continue
 
-            with open(filepath, 'rb') as f:
-                data = f.read()
+    # Fallback: try Piped if Invidious failed
+    if not stream_url:
+        for instance in PIPED_INSTANCES:
+            try:
+                resp = requests.get(
+                    f'{instance}/streams/{video_id}',
+                    timeout=8,
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                if not resp.ok:
+                    continue
+                data = resp.json()
+                video_title = data.get('title', video_id)
 
-        mime = 'audio/mpeg' if ext == 'mp3' else 'video/mp4'
-        return Response(
-            data,
-            mimetype=mime,
-            headers={
-                'Content-Disposition': f'attachment; filename="{filename}"',
-                'Content-Length': str(len(data)),
-            }
-        )
-    except ImportError:
-        return jsonify({'error': 'yt-dlp not installed. Run: pip install yt-dlp'}), 500
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+                if fmt == 'mp3':
+                    streams = data.get('audioStreams', [])
+                    streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
+                    qual_map = {'320': 0, '192': 1, '128': 2}
+                    idx = min(qual_map.get(qual, 0), max(len(streams) - 1, 0))
+                    if streams:
+                        stream_url = streams[idx].get('url')
+                else:
+                    streams = data.get('videoStreams', [])
+                    qual_int = int(qual)
+                    best = None
+                    for s in streams:
+                        h = s.get('height', 0) or 0
+                        # Only use muxed streams (have audio) — Piped marks them
+                        if not s.get('videoOnly', True) and h <= qual_int:
+                            if best is None or h > (best.get('height') or 0):
+                                best = s
+                    if best:
+                        stream_url = best.get('url')
+
+                if stream_url:
+                    break
+            except Exception:
+                continue
+
+    if not stream_url:
+        return jsonify({'error': 'Could not get stream URL — all sources failed'}), 502
+
+    # Clean filename
+    safe_title = ''.join(c if c.isalnum() or c in ' _-' else '_' for c in video_title)
+    ext = 'mp3' if fmt == 'mp3' else 'mp4'
+    filename = f'{safe_title}.{ext}'
+
+    # Redirect browser directly to the stream URL with download header
+    # The stream server handles the actual file transfer — no load on our server
+    from flask import redirect
+    resp = redirect(stream_url, code=302)
+    resp.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return resp
 
 
 if __name__ == '__main__':

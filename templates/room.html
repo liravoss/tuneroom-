@@ -112,6 +112,46 @@
     <div id="extra-ctrls">
       <button id="btn-vid-toggle">🎬 Video</button>
       <button id="btn-lyrics">🎤 Lyrics</button>
+      <button id="btn-download">⬇ Download</button>
+    </div>
+
+    <!-- Download Modal -->
+    <div id="download-modal">
+      <div id="download-card">
+        <div id="download-card-shine"></div>
+        <div id="download-header">
+          <div id="download-title">
+            <span id="download-song-name">Download</span>
+            <div id="download-subtitle">Choose format &amp; quality</div>
+          </div>
+          <button id="download-close">✕</button>
+        </div>
+
+        <div id="download-format-row">
+          <button class="dl-fmt-btn active" data-fmt="mp4">🎬 MP4 Video</button>
+          <button class="dl-fmt-btn" data-fmt="mp3">🎵 MP3 Audio</button>
+        </div>
+
+        <div id="download-quality-row">
+          <button class="dl-qual-btn active" data-qual="720">720p</button>
+          <button class="dl-qual-btn" data-qual="1080">1080p</button>
+          <button class="dl-qual-btn" data-qual="360">360p</button>
+        </div>
+
+        <div id="download-audio-row">
+          <button class="dl-qual-btn active" data-qual="192">192 kbps</button>
+          <button class="dl-qual-btn" data-qual="320">320 kbps</button>
+          <button class="dl-qual-btn" data-qual="128">128 kbps</button>
+        </div>
+
+        <button id="download-go-btn">
+          <span id="download-go-label">⬇ Download</span>
+        </button>
+
+        <div id="download-note">
+             ❄ Thanks for using TuneRoom — enjoy the music 🎵
+        </div>
+      </div>
     </div>
 
     <div id="paste-bar">

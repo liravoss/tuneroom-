@@ -480,6 +480,84 @@
     if(lyricsOpen&&currentSong) fetchLyrics(currentSong.title,currentSong.channel);
   }
 
+  // ── Download ──────────────────────────────────────────────────────────────────
+  function openDownload(){
+    if(!currentSong){ toast('No song playing'); return; }
+    const modal = document.getElementById('download-modal');
+    if(!modal) return;
+    // Set song name
+    const nameEl = document.getElementById('download-song-name');
+    if(nameEl) nameEl.textContent = currentSong.title || 'Download';
+    // Reset to defaults
+    _dlSetFormat('mp4');
+    _dlSetVideoQual('720');
+    _dlSetAudioQual('192');
+    modal.classList.add('open');
+  }
+
+  function _dlSetFormat(fmt){
+    document.querySelectorAll('.dl-fmt-btn').forEach(b=>b.classList.toggle('active', b.dataset.fmt===fmt));
+    const qRow = document.getElementById('download-quality-row');
+    const aRow = document.getElementById('download-audio-row');
+    if(fmt==='mp3'){ if(qRow) qRow.style.display='none'; if(aRow) aRow.style.display='flex'; }
+    else           { if(qRow) qRow.style.display='flex'; if(aRow) aRow.style.display='none'; }
+  }
+
+  function _dlSetVideoQual(q){
+    document.querySelectorAll('#download-quality-row .dl-qual-btn').forEach(b=>b.classList.toggle('active', b.dataset.qual===q));
+  }
+
+  function _dlSetAudioQual(q){
+    document.querySelectorAll('#download-audio-row .dl-qual-btn').forEach(b=>b.classList.toggle('active', b.dataset.qual===q));
+  }
+
+  function _dlGetActive(selector){
+    return document.querySelector(selector+' .dl-qual-btn.active')?.dataset.qual || null;
+  }
+
+  function _dlGo(){
+    if(!currentSong) return;
+    const fmt  = document.querySelector('.dl-fmt-btn.active')?.dataset.fmt || 'mp4';
+    const qual = fmt==='mp4' ? _dlGetActive('#download-quality-row') : _dlGetActive('#download-audio-row');
+    const videoId = currentSong.id;
+    // cobalt.tools supports quality via URL params
+    let url;
+    if(fmt==='mp3'){
+      url = `https://cobalt.tools/#https://youtube.com/watch?v=${videoId}`;
+    } else {
+      url = `https://cobalt.tools/#https://youtube.com/watch?v=${videoId}`;
+    }
+    // Store prefs in label so user knows what they picked
+    const label = fmt==='mp3' ? `MP3 ${qual}kbps` : `MP4 ${qual}p`;
+    toast(`Opening download: ${label}`);
+    window.open(url, '_blank');
+    document.getElementById('download-modal')?.classList.remove('open');
+  }
+
+  function _wireDownloadModal(){
+    // Format buttons
+    document.querySelectorAll('.dl-fmt-btn').forEach(b=>{
+      b.onclick = ()=> _dlSetFormat(b.dataset.fmt);
+    });
+    // Video quality buttons
+    document.querySelectorAll('#download-quality-row .dl-qual-btn').forEach(b=>{
+      b.onclick = ()=> _dlSetVideoQual(b.dataset.qual);
+    });
+    // Audio quality buttons
+    document.querySelectorAll('#download-audio-row .dl-qual-btn').forEach(b=>{
+      b.onclick = ()=> _dlSetAudioQual(b.dataset.qual);
+    });
+    // Close
+    const closeBtn = document.getElementById('download-close');
+    if(closeBtn) closeBtn.onclick = ()=> document.getElementById('download-modal')?.classList.remove('open');
+    // Backdrop click
+    const modal = document.getElementById('download-modal');
+    if(modal) modal.onclick = e=>{ if(e.target===modal) modal.classList.remove('open'); };
+    // Go button
+    const goBtn = document.getElementById('download-go-btn');
+    if(goBtn) goBtn.onclick = _dlGo;
+  }
+
   // ── Queue ─────────────────────────────────────────────────────────────────────
   function renderQueue(){
     const el=$('q-list'); if(!el) return;
@@ -722,6 +800,10 @@ function initMobileTabs(){
   const tabs = document.querySelectorAll('.mob-tab');
   if (!tabs.length) return;
 
+  function initMobileTabs(){
+  const tabs = document.querySelectorAll('.mob-tab');
+  if (!tabs.length) return;
+
   function showPanel(panelId) {
     // Hide ALL panels
     document.querySelectorAll('#panel-player, #panel-queue, #panel-chat').forEach(el => {
@@ -764,6 +846,28 @@ function initMobileTabs(){
   }
 }
 
+  tabs.forEach(tab => {
+    tab.onclick = () => {
+      // Update tab styles
+      tabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      // Show correct panel
+      const which = tab.dataset.tab;
+      showPanel('panel-' + which);
+    };
+  });
+
+  // On mobile load → force Player tab active + visible
+  if (window.innerWidth <= 768) {
+    const playerTab = document.querySelector('.mob-tab[data-tab="player"]');
+    if (playerTab) {
+      playerTab.classList.add('active');
+      showPanel('panel-player');
+    }
+  }
+}
+
   // ── Wire buttons ──────────────────────────────────────────────────────────────
   function wireEventListeners(){
     on('btn-search',     doSearch);
@@ -775,6 +879,7 @@ function initMobileTabs(){
     on('btn-send',       sendChat);
     on('btn-vid-toggle', toggleVideoMode);
     on('btn-lyrics',     toggleLyrics);
+    on('btn-download',   openDownload);
     on('btn-voice',      joinVoice);
     on('btn-mute',       toggleMute);
     on('btn-share',      openShare);
@@ -807,6 +912,7 @@ function initMobileTabs(){
       const box=$('search-results'),bar=document.querySelector('.search-bar');
       if(box&&bar&&!bar.contains(e.target)) box.innerHTML='';
     });
+    _wireDownloadModal();
   }
 
   // ── Boot ──────────────────────────────────────────────────────────────────────

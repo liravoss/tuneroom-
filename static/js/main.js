@@ -1,3 +1,5 @@
+// TuneRoom — main.js (final version with fast skipping on errors)
+
 (function () {
   'use strict';
 
@@ -5,16 +7,10 @@
   const CONFIG = {
     DRIFT_CHECK_MS:        2500,
     DRIFT_THRESHOLD_SEC:   2.8,
-    JOIN_BUFFER_SEC:       1.5,           // initial load buffer
-    PEER_SYNC_BUFFER_SEC:  1.5,           // peer reply seek buffer
-    JOIN_TIMEOUT_MS:       6000,          // increased for slow connections/mobile
-    RETRY_BASE_MS:         1800,
-    MAX_RETRIES:           5,
-    PEER_SYNC_TIMEOUT_MS:  8000,
-    SYNC_REPLY_TTL_SEC:    12,
+    JOIN_BUFFER_SEC:       1.5,
+    PEER_SYNC_BUFFER_SEC:  1.5,
+    JOIN_TIMEOUT_MS:       6000,
     FETCH_TIMEOUT_MS:      12000,
-    SEARCH_TIMEOUT_MS:     16000,
-    PLAYLIST_TIMEOUT_MS:   32000
   };
 
   const COLORS = ['#60a5fa','#34d399','#f472b6','#fb923c','#a78bfa','#facc15','#38bdf8','#f87171'];
@@ -52,36 +48,26 @@
     toast._tid = setTimeout(() => t.classList.remove('on'), dur);
   };
 
-  // Safe fetch wrapper
   async function safeFetch(url, options = {}) {
     try {
       const res = await fetch(url, {
         ...options,
-        signal: options.signal || AbortSignal.timeout(CONFIG.FETCH_TIMEOUT_MS)
+        signal: AbortSignal.timeout(CONFIG.FETCH_TIMEOUT_MS)
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (err) {
-      console.warn('Fetch failed:', url, err);
-      toast(err.message.includes('timeout') ? 'Request timed out' : 'Network error');
+      toast('Network error');
       throw err;
     }
   }
 
-  // Safe YouTube player method calls
   function safePlayerCall(method, ...args) {
-    if (!ytReady || !ytPlayer) {
-      console.warn(`Cannot call ytPlayer.${method}: player not ready`);
-      return null;
-    }
+    if (!ytReady || !ytPlayer) return null;
     try {
       return ytPlayer[method](...args);
     } catch (err) {
-      console.error(`YouTube player error in ${method}:`, err);
-      toast('Player issue — attempting recovery');
+      console.warn(`Player.${method} failed:`, err);
       return null;
     }
   }
@@ -107,10 +93,9 @@
   // ── Join modal ───────────────────────────────────────────────────────────────
   function doJoin() {
     const name = $('m-name')?.value?.trim();
-    if (!name) return toast('Please enter your name');
-
-    ME.name  = name;
-    ME.room  = $('m-room')?.value?.trim() || 'main';
+    if (!name) return toast('Enter your name');
+    ME.name = name;
+    ME.room = $('m-room')?.value?.trim() || 'main';
     ME.color = document.querySelector('.color-dot.on')?.dataset.color || COLORS[0];
 
     const modal = $('modal'), app = $('app');
@@ -122,49 +107,36 @@
       app.classList.add('app-enter');
       wireEventListeners();
       initSocket();
-      sysMsg(`${ME.name} joined the room ❄️`);
+      sysMsg(`${ME.name} joined ❄️`);
       if (typeof initMobileTabs === 'function') initMobileTabs();
     }, 400);
   }
 
   // ── Socket ───────────────────────────────────────────────────────────────────
   function initSocket() {
-    if (typeof io === 'undefined') {
-      toast('Socket.IO not loaded — offline mode');
-      return;
-    }
-
-    socket = io({ reconnectionAttempts: 12, timeout: 14000 });
+    if (typeof io === 'undefined') return toast('Offline mode');
+    socket = io();
 
     socket.on('connect', () => {
       socket.emit('join', { room: ME.room, username: ME.name, color: ME.color, uid: MY_UID });
     });
 
-    socket.on('reconnect', () => {
-      if (ME.name) socket.emit('join', { room: ME.room, username: ME.name, color: ME.color, uid: MY_UID });
-    });
-
     socket.on('room_state', data => {
-      try {
-        queue  = data.queue  || [];
-        curIdx = data.current_index ?? -1;
-        renderQueue();
-        (data.chat_history || []).forEach(addChatMsg);
-        updateUserCount(data.users?.length ?? 1);
+      queue = data.queue || [];
+      curIdx = data.current_index ?? -1;
+      renderQueue();
+      (data.chat_history || []).forEach(addChatMsg);
+      updateUserCount(data.users?.length ?? 1);
 
-        if (curIdx >= 0 && queue[curIdx]) {
-          currentSong = queue[curIdx];
-          updateNowPlaying(currentSong);
-          joinSync(currentSong.id, data.current_time ?? 0, data.is_playing ?? false);
-        }
-      } catch (err) {
-        console.error('room_state parsing error:', err);
-        toast('Failed to load room state');
+      if (curIdx >= 0 && queue[curIdx]) {
+        currentSong = queue[curIdx];
+        updateNowPlaying(currentSong);
+        joinSync(currentSong.id, data.current_time ?? 0, data.is_playing ?? false);
       }
     });
 
-    socket.on('user_joined',  d => updateUserCount(d.user_count ?? 1));
-    socket.on('user_left',    d => updateUserCount(d.user_count ?? 1));
+    socket.on('user_joined',  d => updateUserCount(d.user_count));
+    socket.on('user_left',    d => updateUserCount(d.user_count));
     socket.on('queue_updated', d => {
       queue = d.queue || [];
       if (d.current_index !== undefined) curIdx = d.current_index;
@@ -183,24 +155,19 @@
     });
 
     socket.on('player_sync', d => {
-      if (isJoining || !ytReady || !ytPlayer) return;
+      if (isJoining || !ytReady) return;
       const state = safePlayerCall('getPlayerState');
-      const current = safePlayerCall('getCurrentTime') || 0;
-      const target  = parseFloat(d.current_time) || 0;
+      const ct = safePlayerCall('getCurrentTime') || 0;
+      const target = parseFloat(d.current_time) || 0;
 
-      if (Math.abs(current - target) > 9) {
-        safePlayerCall('seekTo', target, true);
-      }
-
-      if (d.is_playing && state === YT.PlayerState.PAUSED)   safePlayerCall('playVideo');
+      if (Math.abs(ct - target) > 9) safePlayerCall('seekTo', target, true);
+      if (d.is_playing && state === YT.PlayerState.PAUSED) safePlayerCall('playVideo');
       if (!d.is_playing && state === YT.PlayerState.PLAYING) safePlayerCall('pauseVideo');
     });
 
-    // Peer sync – existing users reply with live time
     socket.on('request_sync', d => {
-      if (!ytReady || !ytPlayer || isJoining) return;
+      if (!ytReady || isJoining) return;
       if (safePlayerCall('getPlayerState') !== YT.PlayerState.PLAYING) return;
-
       socket.emit('sync_reply', {
         room: ME.room,
         for_sid: d.for_sid,
@@ -211,18 +178,15 @@
       });
     });
 
-    // New user receives fresh peer time
     socket.on('sync_from_peer', d => {
       if (syncFromPeerHandled) return;
       const age = Date.now() - (d.ts || 0);
-      if (age > CONFIG.SYNC_REPLY_TTL_SEC * 1000) return;
-
+      if (age > 12000) return;
       syncFromPeerHandled = true;
-      const target = (parseFloat(d.current_time) || 0) + CONFIG.PEER_SYNC_BUFFER_SEC;
 
+      const target = (parseFloat(d.current_time) || 0) + CONFIG.PEER_SYNC_BUFFER_SEC;
       waitForPlayerReady(() => {
         const check = setInterval(() => {
-          if (!ytReady || !ytPlayer) return;
           const st = safePlayerCall('getPlayerState');
           if ([YT.PlayerState.PLAYING, YT.PlayerState.PAUSED, YT.PlayerState.BUFFERING].includes(st)) {
             clearInterval(check);
@@ -232,91 +196,110 @@
             setTimeout(() => syncFromPeerHandled = false, 7000);
           }
         }, 250);
-
-        setTimeout(() => {
-          clearInterval(check);
-          syncFromPeerHandled = false;
-        }, CONFIG.PEER_SYNC_TIMEOUT_MS);
+        setTimeout(() => { clearInterval(check); syncFromPeerHandled = false; }, 8000);
       });
     });
 
-    socket.on('chat_msg',   addChatMsg);
-    socket.on('toast',      d => toast(d.msg || ''));
-    socket.on('reaction',   d => applyReaction(d.mid, d.emoji));
+    socket.on('chat_msg', addChatMsg);
+    socket.on('toast', d => toast(d.msg || ''));
+    socket.on('reaction', d => applyReaction(d.mid, d.emoji));
 
     socket.on('voice_peer_joined', d => {
       addVoicePeer(d.sid, d.username);
       if (voiceOn && d.sid !== socket.id) createPeerConnection(d.sid, true);
     });
-    socket.on('voice_peer_left',  d => { removePeer(d.sid); removeVoicePeer(d.sid); });
-    socket.on('voice_signal',     handleVoiceSignal);
+    socket.on('voice_peer_left', d => { removePeer(d.sid); removeVoicePeer(d.sid); });
+    socket.on('voice_signal', handleVoiceSignal);
   }
 
-  function waitForPlayerReady(callback) {
-    if (ytReady && ytPlayer?.loadVideoById) return callback();
-    setTimeout(() => waitForPlayerReady(callback), 180);
+  function waitForPlayerReady(cb) {
+    if (ytReady && ytPlayer) return cb();
+    setTimeout(() => waitForPlayerReady(cb), 180);
   }
 
   // ── YouTube Player ───────────────────────────────────────────────────────────
   window.onYouTubeIframeAPIReady = () => {
-    try {
-      ytPlayer = new YT.Player('yt-player', {
-        height: '100%',
-        width:  '100%',
-        playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, iv_load_policy: 3 },
-        events: {
-          onReady: () => { ytReady = true; },
-          onStateChange: e => {
-            const S = YT.PlayerState;
-            switch (e.data) {
-              case S.PLAYING:
-                $('btn-pp').textContent = '⏸';
-                retryCount = 0; clearRetry();
-                if (!isJoining) {
-                  lockSyncOffset(safePlayerCall('getCurrentTime') || 0);
-                  startDriftCheck();
-                  emitPlayerSync();
-                }
-                break;
-              case S.PAUSED:
-                $('btn-pp').textContent = '▶';
-                stopDriftCheck();
-                clearRetry();
-                if (!isJoining) emitPlayerSync();
-                break;
-              case S.ENDED:
-                stopDriftCheck();
-                if (!isJoining) nextSong();
-                break;
-              case -1:
-                if (!isJoining) scheduleRetry();
-                break;
+    ytPlayer = new YT.Player('yt-player', {
+      height: '100%',
+      width: '100%',
+      playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, iv_load_policy: 3 },
+      events: {
+        onReady: () => { ytReady = true; },
+        onStateChange: e => {
+          const S = YT.PlayerState;
+          if (e.data === S.PLAYING) {
+            $('btn-pp').textContent = '⏸';
+            retryCount = 0; clearRetry();
+            if (!isJoining) {
+              lockSyncOffset(safePlayerCall('getCurrentTime') || 0);
+              startDriftCheck();
+              emitPlayerSync();
             }
-          },
-          onError: e => {
-            if (isJoining) return;
-            const code = e.data;
-            if (code === 101 || code === 150) {
-              toast('Video blocked in your region — skipping');
-              setTimeout(nextSong, 1400);
-            } else if (code === 100) {
-              toast('Video not found — skipping');
-              setTimeout(nextSong, 1400);
-            } else {
-              scheduleRetry();
-            }
+          } else if (e.data === S.PAUSED) {
+            $('btn-pp').textContent = '▶';
+            stopDriftCheck();
+            clearRetry();
+            if (!isJoining) emitPlayerSync();
+          } else if (e.data === S.ENDED) {
+            stopDriftCheck();
+            if (!isJoining) nextSong();
+          } else if (e.data === -1 && !isJoining) {
+            scheduleRetry();
+          }
+        },
+        onError: e => {
+          if (isJoining) return;
+          const code = e.data;
+          let skipImmediately = false;
+
+          if (code === 101 || code === 150) {
+            toast('⚠ Video blocked — skipping');
+            skipImmediately = true;
+          } else if (code === 100) {
+            toast('⚠ Video not found — skipping');
+            skipImmediately = true;
+          }
+
+          if (skipImmediately) {
+            clearRetry();
+            setTimeout(nextSong, 1000);
+          } else {
+            scheduleRetry();
           }
         }
-      });
-    } catch (err) {
-      console.error('YouTube Player init failed:', err);
-      toast('Failed to initialize video player');
-    }
+      }
+    });
   };
 
-  // ── Drift compensation ───────────────────────────────────────────────────────
-  function lockSyncOffset(songSeconds) {
-    syncOffset = { wallStart: Date.now(), songStart: parseFloat(songSeconds) || 0 };
+  // ── Fast retry / skip logic ─────────────────────────────────────────────────
+  function scheduleRetry() {
+    if (retryCount >= 1) {
+      retryCount = 0;
+      clearRetry();
+      toast('⚠️ Unplayable — skipping');
+      setTimeout(nextSong, 800);
+      return;
+    }
+
+    clearRetry();
+    const delay = 1500 + retryCount * 1000;
+    retryTimer = setTimeout(() => {
+      if (isJoining || !queue[curIdx]) return;
+      if (safePlayerCall('getPlayerState') === YT.PlayerState.PAUSED) return;
+      retryCount++;
+      if (retryCount === 1) toast('⟳ Retrying…');
+      safePlayerCall('loadVideoById', queue[curIdx].id);
+    }, delay);
+  }
+
+  function clearRetry() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+
+  // ── Drift & Sync helpers ─────────────────────────────────────────────────────
+  function lockSyncOffset(sec) {
+    syncOffset = { wallStart: Date.now(), songStart: parseFloat(sec) || 0 };
   }
 
   function getExpectedPosition() {
@@ -326,14 +309,11 @@
   function startDriftCheck() {
     stopDriftCheck();
     syncCheckTimer = setInterval(() => {
-      if (!ytReady || !ytPlayer || isJoining || !syncOffset) return;
+      if (!ytReady || isJoining || !syncOffset) return;
       if (safePlayerCall('getPlayerState') !== YT.PlayerState.PLAYING) return;
-
-      const actual   = safePlayerCall('getCurrentTime') || 0;
+      const actual = safePlayerCall('getCurrentTime') || 0;
       const expected = getExpectedPosition();
-      const drift    = Math.abs(actual - expected);
-
-      if (drift > CONFIG.DRIFT_THRESHOLD_SEC) {
+      if (Math.abs(actual - expected) > CONFIG.DRIFT_THRESHOLD_SEC) {
         safePlayerCall('seekTo', expected, true);
       }
     }, CONFIG.DRIFT_CHECK_MS);
@@ -346,7 +326,7 @@
   }
 
   function emitPlayerSync() {
-    if (!socket?.connected || !ytReady || !ytPlayer || isJoining) return;
+    if (!socket?.connected || !ytReady || isJoining) return;
     socket.emit('player_sync', {
       room: ME.room,
       is_playing: safePlayerCall('getPlayerState') === YT.PlayerState.PLAYING,
@@ -354,26 +334,18 @@
     });
   }
 
-  // ── Join sync ────────────────────────────────────────────────────────────────
-  function joinSync(videoId, serverTimeSec, shouldPlay) {
+  function joinSync(videoId, serverTime, shouldPlay) {
     isJoining = true;
     stopDriftCheck();
-
-    const startSec = Math.max(0, (parseFloat(serverTimeSec) || 0) + CONFIG.JOIN_BUFFER_SEC);
+    const startSec = Math.max(0, (parseFloat(serverTime) || 0) + CONFIG.JOIN_BUFFER_SEC);
 
     waitForPlayerReady(() => {
-      if (!safePlayerCall('loadVideoById', { videoId, startSeconds: Math.floor(startSec) })) {
-        isJoining = false;
-        toast('Failed to load video on join');
-        return;
-      }
+      safePlayerCall('loadVideoById', { videoId, startSeconds: Math.floor(startSec) });
 
       let settled = false;
       const poll = setInterval(() => {
-        if (settled || !ytPlayer) return;
+        if (settled) return;
         const state = safePlayerCall('getPlayerState');
-        if (state === null) return;
-
         if ([YT.PlayerState.PLAYING, YT.PlayerState.BUFFERING].includes(state)) {
           if (!shouldPlay) safePlayerCall('pauseVideo');
           else {
@@ -394,62 +366,38 @@
         if (!settled) {
           clearInterval(poll);
           isJoining = false;
-          toast('Slow connection — sync may take a moment');
         }
       }, CONFIG.JOIN_TIMEOUT_MS);
     });
   }
 
-  // ── Retry ────────────────────────────────────────────────────────────────────
-  function scheduleRetry() {
-    if (retryCount >= CONFIG.MAX_RETRIES) {
-      retryCount = 0;
-      toast('Video unplayable — skipping');
-      nextSong();
-      return;
-    }
-    clearRetry();
-    const delay = CONFIG.RETRY_BASE_MS + retryCount * 1200;
-    retryTimer = setTimeout(() => {
-      if (isJoining || !queue[curIdx] || safePlayerCall('getPlayerState') === YT.PlayerState.PAUSED) return;
-      retryCount++;
-      toast(`Retrying (${retryCount}/${CONFIG.MAX_RETRIES})…`);
-      safePlayerCall('loadVideoById', queue[curIdx].id);
-    }, delay);
-  }
-
-  function clearRetry() {
-    if (retryTimer) clearTimeout(retryTimer);
-    retryTimer = null;
-  }
-
   // ── Playback controls ────────────────────────────────────────────────────────
-  function loadAndPlay(index) {
-    if (index < 0 || index >= queue.length) return;
+  function loadAndPlay(idx) {
+    if (idx < 0 || idx >= queue.length) return;
     isJoining = false;
-    curIdx = index;
+    curIdx = idx;
     retryCount = 0;
     clearRetry();
     stopDriftCheck();
 
-    currentSong = queue[curIdx];
+    currentSong = queue[idx];
     updateNowPlaying(currentSong);
     renderQueue();
     applyVideoMode();
 
     waitForPlayerReady(() => {
       safePlayerCall('loadVideoById', currentSong.id);
-      if (socket?.connected) socket.emit('play_song', { room: ME.room, index });
+      socket?.emit('play_song', { room: ME.room, index: idx });
     });
 
-    if (lyricsOpen && currentSong) fetchLyrics(currentSong.title, currentSong.channel);
+    if (lyricsOpen) fetchLyrics(currentSong.title, currentSong.channel);
   }
 
   function togglePlayPause() {
     if (!ytReady) return;
     if (curIdx < 0 && queue.length) return loadAndPlay(0);
-    const state = safePlayerCall('getPlayerState');
-    if (state === YT.PlayerState.PLAYING) safePlayerCall('pauseVideo');
+    const st = safePlayerCall('getPlayerState');
+    if (st === YT.PlayerState.PLAYING) safePlayerCall('pauseVideo');
     else safePlayerCall('playVideo');
   }
 
@@ -458,38 +406,28 @@
 
   function shuffleQueue() {
     if (queue.length < 2) return;
-    const current = curIdx >= 0 ? queue[curIdx] : null;
-    const others = queue.filter((_,i) => i !== curIdx);
-    for (let i = others.length - 1; i > 0; i--) {
+    const cur = curIdx >= 0 ? queue[curIdx] : null;
+    let rest = queue.filter((_,i) => i !== curIdx);
+    for (let i = rest.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [others[i], others[j]] = [others[j], others[i]];
+      [rest[i], rest[j]] = [rest[j], rest[i]];
     }
-    queue = current ? [current, ...others] : others;
-    curIdx = current ? 0 : -1;
+    queue = cur ? [cur, ...rest] : rest;
+    curIdx = cur ? 0 : -1;
     renderQueue();
-    toast('Queue shuffled 🔀');
-    if (socket?.connected) socket.emit('reorder_queue', { room: ME.room, queue });
+    toast('Shuffled 🔀');
+    socket?.emit('reorder_queue', { room: ME.room, queue });
   }
 
-  // ── Video/Audio mode ─────────────────────────────────────────────────────────
   function toggleVideoMode() {
     videoMode = !videoMode;
-    applyVideoMode();
-    const btn = $('btn-vid-toggle');
-    if (btn) {
-      btn.textContent = videoMode ? '🎬 Video' : '🎵 Audio';
-      btn.classList.toggle('audio-mode', !videoMode);
-      toast(videoMode ? 'Video mode' : 'Audio mode');
-    }
-  }
-
-  function applyVideoMode() {
     const wrap = $('yt-wrap');
-    if (!wrap) return;
-    wrap.style.opacity = videoMode ? '1' : '0';
-    wrap.style.height = videoMode ? '' : '0';
-    wrap.style.overflow = videoMode ? '' : 'hidden';
-    wrap.style.pointerEvents = videoMode ? '' : 'none';
+    if (wrap) {
+      wrap.style.opacity = videoMode ? '1' : '0';
+      wrap.style.height = videoMode ? '' : '0';
+      wrap.style.pointerEvents = videoMode ? '' : 'none';
+    }
+    toast(videoMode ? 'Video mode' : 'Audio mode');
   }
 
   // ── Lyrics ───────────────────────────────────────────────────────────────────
@@ -497,50 +435,170 @@
     const body = $('lyrics-body');
     if (!body) return;
     body.innerHTML = '<div class="lyr-msg">Fetching…</div>';
-    $('lyrics-title').textContent = title || '';
 
-    const cleanTitle = (title || '').replace(/[\(\[][^)\]]+[\)\]]/g,'')
-                                    .replace(/official.*?(video|audio|mv)?/gi,'')
-                                    .replace(/[-|].*$/,'').trim();
-    const cleanArtist = (artist || '').replace(/\s*(ft\.?|feat\.?|&|x)\s*.*/i,'').trim();
+    const cleanT = (title || '').replace(/[\(\[].*?[\)\]]/g,'').replace(/official.*?(video|audio)?/gi,'').trim();
+    const cleanA = (artist || '').replace(/\s*(ft\.?|feat\.?|&).*/i,'').trim();
 
     try {
-      const data = await safeFetch(`/api/lyrics?title=${encodeURIComponent(cleanTitle)}&artist=${encodeURIComponent(cleanArtist)}`);
-      body.innerHTML = data.lyrics
-        ? `<pre class="lyr-text">${esc(data.lyrics)}</pre>`
-        : '<div class="lyr-msg">No lyrics found</div>';
+      const data = await safeFetch(`/api/lyrics?title=${encodeURIComponent(cleanT)}&artist=${encodeURIComponent(cleanA)}`);
+      body.innerHTML = data.lyrics ? `<pre class="lyr-text">${esc(data.lyrics)}</pre>` : '<div class="lyr-msg">No lyrics</div>';
     } catch {
-      body.innerHTML = '<div class="lyr-msg">Couldn’t load lyrics</div>';
+      body.innerHTML = '<div class="lyr-msg">Lyrics unavailable</div>';
     }
   }
 
   function toggleLyrics() {
     lyricsOpen = !lyricsOpen;
-    const panel = $('lyrics-panel'), btn = $('btn-lyrics');
-    if (!panel || !btn) return;
-    panel.classList.toggle('open', lyricsOpen);
-    btn.classList.toggle('active', lyricsOpen);
+    $('lyrics-panel')?.classList.toggle('open', lyricsOpen);
+    $('btn-lyrics')?.classList.toggle('active', lyricsOpen);
     if (lyricsOpen && currentSong) fetchLyrics(currentSong.title, currentSong.channel);
-    else if (!lyricsOpen) panel.classList.remove('open');
   }
 
-  // ── Queue & UI rendering (rest of the file continues similarly with defensive checks)
+  // ── Queue render ─────────────────────────────────────────────────────────────
+  function renderQueue() {
+    const el = $('q-list');
+    if (!el) return;
+    if (!queue.length) {
+      el.innerHTML = '<div class="q-empty">Add songs to queue</div>';
+      return;
+    }
 
-  // ... (renderQueue, updateNowPlaying, addToQueue, doSearch, doPaste, addById, clearQueue, loadPlaylist, chat functions, voice functions remain as in previous version but with safeFetch and safePlayerCall applied where applicable)
+    el.innerHTML = '';
+    queue.forEach((s, i) => {
+      const item = document.createElement('div');
+      item.className = `q-item${i === curIdx ? ' now' : ''}`;
+      item.dataset.qid = s.qid;
+      item.innerHTML = `
+        <span class="q-num">${i+1}</span>
+        <img src="${esc(s.thumbnail)}" onerror="this.style.background='#1e3a8a'">
+        <div class="q-info">
+          <div class="q-title">${esc(s.title)}</div>
+          <div class="q-chan">${esc(s.channel||'')}</div>
+        </div>
+        <button class="q-del" data-qid="${esc(s.qid)}">✕</button>
+      `;
+      item.ondblclick = () => loadAndPlay(i);
+      el.appendChild(item);
+    });
 
-  // For brevity, the rest follows the same defensive pattern shown above.
+    el.querySelectorAll('.q-del').forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        const qid = btn.dataset.qid;
+        socket?.emit('remove_from_queue', { room: ME.room, qid });
+      };
+    });
+
+    if (window.Sortable) {
+      if (sortableInstance) sortableInstance.destroy();
+      sortableInstance = Sortable.create(el, {
+        animation: 130,
+        onEnd: ev => {
+          const item = queue.splice(ev.oldIndex, 1)[0];
+          queue.splice(ev.newIndex, 0, item);
+          if (curIdx === ev.oldIndex) curIdx = ev.newIndex;
+          renderQueue();
+          socket?.emit('reorder_queue', { room: ME.room, queue });
+        }
+      });
+    }
+  }
+
+  function updateNowPlaying(s) {
+    $('np-title').textContent = s?.title || '';
+    $('np-channel').textContent = s?.channel || '';
+  }
+
+  function updateUserCount(n) {
+    $('u-count').textContent = n + ' online ❄️';
+  }
+
+  function sysMsg(t) {
+    const box = $('chat-msgs');
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    div.innerHTML = `<div class="chat-sys">${esc(t)}</div>`;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // ── Chat ─────────────────────────────────────────────────────────────────────
+  function sendChat() {
+    const inp = $('chat-inp');
+    const txt = inp?.value.trim();
+    if (!txt) return;
+    inp.value = '';
+    socket?.emit('chat_msg', { room: ME.room, username: ME.name, color: ME.color, text: txt });
+  }
+
+  function addChatMsg(m) {
+    const box = $('chat-msgs');
+    if (!box) return;
+    const div = document.createElement('div');
+    const mid = 'm' + (++msgN);
+
+    if (m.type === 'system') {
+      div.innerHTML = `<div class="chat-sys">${esc(m.text)}</div>`;
+    } else {
+      const ts = new Date((m.ts||Date.now()/1000)*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      div.innerHTML = `
+        <div class="chat-head">
+          <div class="chat-av" style="background:${m.color}22;color:${m.color}">${(m.username||'?')[0].toUpperCase()}</div>
+          <span class="chat-name" style="color:${m.color}">${esc(m.username)}</span>
+          <span class="chat-time">${ts}</span>
+        </div>
+        <div class="chat-text">${esc(m.text)}</div>
+        <div class="react-pick">${EMOJI.map(e=>`<span class="re" data-mid="${mid}" data-e="${e}">${e}</span>`).join('')}</div>
+        <div class="react-bar" id="rx-${mid}"></div>
+      `;
+      div.querySelectorAll('.re').forEach(el => {
+        el.onclick = () => {
+          applyReaction(el.dataset.mid, el.dataset.e);
+          socket?.emit('reaction', { room: ME.room, mid: el.dataset.mid, emoji: el.dataset.e });
+        };
+      });
+    }
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function applyReaction(mid, emoji) {
+    const bar = $('rx-' + mid);
+    if (!bar) return;
+    let ex = bar.querySelector(`[data-e="${emoji}"]`);
+    if (ex) {
+      let c = (parseInt(ex.dataset.c)||0) + 1;
+      ex.dataset.c = c;
+      ex.textContent = emoji + ' ' + c;
+    } else {
+      const b = document.createElement('button');
+      b.className = 'react-btn';
+      b.dataset.e = emoji;
+      b.dataset.c = 1;
+      b.textContent = emoji + ' 1';
+      b.onclick = () => applyReaction(mid, emoji);
+      bar.appendChild(b);
+    }
+  }
+
+  // ── Wire buttons ─────────────────────────────────────────────────────────────
+  function wireEventListeners() {
+    $('btn-search')?.onclick = doSearch;
+    $('btn-paste')?.onclick = doPaste;
+    $('btn-pp')?.onclick = togglePlayPause;
+    $('btn-next')?.onclick = nextSong;
+    $('btn-prev')?.onclick = prevSong;
+    $('btn-shuf')?.onclick = shuffleQueue;
+    $('btn-send')?.onclick = sendChat;
+    $('btn-vid-toggle')?.onclick = toggleVideoMode;
+    $('btn-lyrics')?.onclick = toggleLyrics;
+  }
 
   // ── Boot ─────────────────────────────────────────────────────────────────────
   window.addEventListener('DOMContentLoaded', () => {
     initColorPicker();
-    const joinBtn = $('btn-join');
-    if (joinBtn) joinBtn.onclick = doJoin;
-    const nameInp = $('m-name');
-    if (nameInp) nameInp.onkeydown = e => e.key === 'Enter' && doJoin();
-    const roomInp = $('m-room');
-    if (roomInp) roomInp.onkeydown = e => e.key === 'Enter' && doJoin();
+    $('btn-join')?.onclick = doJoin;
+    $('m-name')?.onkeydown = e => e.key === 'Enter' && doJoin();
   });
-
-  // Mobile tabs, audio context, visibilitychange, share & download modals remain as before
 
 })();

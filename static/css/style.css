@@ -509,26 +509,53 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   /* ── Search results full width ── */
   #search-results { left: 0 !important; right: 0 !important; top: 52px; }
 
-  /* ── All panels hidden by default, shown via tabs ── */
+  /* Panels – full screen, fixed, hidden by default */
   #panel-queue,
   #panel-player,
   #panel-chat {
-    display: none !important;
-    position: absolute;
-    top: 52px;
-    left: 0; right: 0;
-    bottom: 58px;
+    position: fixed !important;
+    top: 52px !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 58px !important;  /* leave room for bottom nav */
     border: none !important;
     border-radius: 0 !important;
+    background: var(--glass) !important;
+    backdrop-filter: blur(20px) !important;
+    display: none;
+    z-index: 10 !important;
     overflow-y: auto;
   }
 
-  /* ── Active tab panel shown ── */
   #panel-queue.mob-active,
   #panel-player.mob-active,
   #panel-chat.mob-active {
     display: flex !important;
-    flex-direction: column;
+  }
+
+  #panel-player.mob-active {
+    padding: 12px 14px;
+    justify-content: flex-start;
+    box-sizing: border-box;
+  }
+
+  #yt-wrap {
+    width: 100% !important;
+    max-width: 100% !important;
+    aspect-ratio: 16 / 9;
+    min-height: 180px !important;     /* ← this prevents collapse */
+    max-height: 50dvh;
+    margin: 12px auto;
+    border-radius: 10px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  #yt-wrap > div,
+  #yt-wrap iframe {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 180px !important;
   }
 
   /* ── Player panel mobile ── */

@@ -718,16 +718,51 @@
   }
 
   // ── Mobile tabs ───────────────────────────────────────────────────────────────
-  function initMobileTabs(){
-    const tabs=document.querySelectorAll('.mob-tab'); if(!tabs.length) return;
-    tabs.forEach(tab=>{
-      tab.onclick=()=>{
-        tabs.forEach(t=>t.classList.remove('active')); tab.classList.add('active');
-        const which=tab.dataset.tab;
-        ['player','queue','chat'].forEach(p=>{ const el=$('panel-'+p); if(el) el.style.display=(p===which)?'':'none'; });
-      };
+function initMobileTabs(){
+  const tabs = document.querySelectorAll('.mob-tab');
+  if (!tabs.length) return;
+
+  function showPanel(panelId) {
+    // Hide ALL panels
+    document.querySelectorAll('#panel-player, #panel-queue, #panel-chat').forEach(el => {
+      el.style.display = 'none';
     });
+
+    // Show the requested one
+    const target = document.getElementById(panelId);
+    if (target) {
+      target.style.display = 'flex';
+
+      // Critical fix for YouTube iframe visibility on mobile tab switch
+      setTimeout(() => {
+        target.offsetHeight;  // Force browser reflow
+        window.dispatchEvent(new Event('resize'));  // YouTube API resize trigger
+        if (ytPlayer && ytReady) {
+          // Explicitly set size to current panel dimensions
+          ytPlayer.setSize(target.clientWidth, target.clientHeight);
+        }
+      }, 100);  // 100ms delay — gives time for display to apply
+    }
   }
+
+  tabs.forEach(tab => {
+    tab.onclick = () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const which = tab.dataset.tab;
+      showPanel('panel-' + which);
+    };
+  });
+
+  // Auto-activate Player on mobile load
+  if (window.innerWidth <= 768) {
+    const playerTab = document.querySelector('.mob-tab[data-tab="player"]');
+    if (playerTab) {
+      playerTab.classList.add('active');
+      showPanel('panel-player');
+    }
+  }
+}
 
   // ── Wire buttons ──────────────────────────────────────────────────────────────
   function wireEventListeners(){

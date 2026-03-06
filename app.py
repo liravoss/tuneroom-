@@ -111,61 +111,27 @@ def cache_set(q, results, source):
     except Exception:
         pass
 
-# ── Room state (users + chat + live playback in RAM) ─────────
-#
-# rooms[rid]['users'][sid] = {
-#   'username', 'color', 'sid', 'uid',
-#   'session_id':       unique uuid per join
-#   'joined_at':        wall time of join
-#   'listen_start':     wall time playback began for this user (None if paused)
-#   'listen_total_sec': accumulated listen seconds this session
-# }
-# rooms[rid]['live_playback'] = {
-#   'current_time', 'is_playing', 'updated_at'
-# }  ← kept fresh by heartbeats, never stale
-import uuid as _uuid
-
-rooms = {}
+# ── Room state (users + chat stay in RAM) ────────────────────
+rooms = {}  # RAM only: users, chat_history, voice_peers
 
 def sanitize_room_id(rid):
     """Allow only safe room IDs — letters, numbers, hyphens, underscores. Max 40 chars."""
     import re
     rid = str(rid or 'main').strip()
-    rid = re.sub(r'[^a-zA-Z0-9_-]', '', rid)
-    rid = rid[:40]
+    rid = re.sub(r'[^a-zA-Z0-9_-]', '', rid)  # strip unsafe chars
+    rid = rid[:40]                               # limit length
     return rid or 'main'
 
 def get_room(rid):
     if rid not in rooms:
+        # Load queue + state from Redis on first access
         rooms[rid] = {
             'users':        {},
             'chat_history': [],
             'voice_peers':  {},
-            'live_playback': {
-                'current_time': 0.0,
-                'is_playing':   False,
-                'updated_at':   time.time(),
-            },
-            'last_sync':    time.time(),
+            'last_sync':    time.time()
         }
     return rooms[rid]
-
-def get_live_time(rid):
-    """
-    Best estimate of current playback position.
-    Uses in-RAM heartbeat (extrapolated forward) if fresh (<10s old).
-    Falls back to Redis otherwise.
-    """
-    r   = get_room(rid)
-    lp  = r['live_playback']
-    age = time.time() - lp['updated_at']
-    if age <= 10:
-        pos = lp['current_time']
-        if lp['is_playing']:
-            pos += age   # extrapolate
-        return pos, lp['is_playing']
-    state = redis_get_state(rid)
-    return state['current_time'], state['is_playing']
 
 def cleanup_dead_rooms():
     """Remove rooms from RAM that have 0 users — runs every 30 minutes."""
@@ -796,62 +762,34 @@ def sanitize_text(t, maxlen=500):
 # ─────────────────────────────────────────────────────────────
 @socketio.on('join')
 def on_join(data):
-    rid        = sanitize_room_id(data.get('room', 'main'))
-    username   = sanitize_text(data.get('username', 'Anonymous'), maxlen=20)
-    color      = sanitize_color(data.get('color', '#60a5fa'))
-    uid        = sanitize_text(str(data.get('uid', request.sid)), maxlen=30)
-    session_id = str(_uuid.uuid4())   # unique per join — never reused
-    now        = time.time()
-
+    rid      = sanitize_room_id(data.get('room', 'main'))
+    username = sanitize_text(data.get('username', 'Anonymous'), maxlen=20)
+    color    = sanitize_color(data.get('color', '#60a5fa'))
+    uid      = sanitize_text(str(data.get('uid', request.sid)), maxlen=30)
     join_room(rid)
     r     = get_room(rid)
-    queue = get_queue(rid)
-
-    # Register user with full session metadata
-    r['users'][request.sid] = {
-        'username':          username,
-        'color':             color,
-        'sid':               request.sid,
-        'uid':               uid,
-        'session_id':        session_id,
-        'joined_at':         now,
-        'listen_start':      None,       # set when playback actually starts
-        'listen_total_sec':  0.0,
-    }
-
-    # Get best available current time — from RAM heartbeat (extrapolated) or Redis
-    live_time, live_playing = get_live_time(rid)
-    state = get_state(rid)  # still need current_index from Redis
-
-    # Send room state to the joiner only
+    queue = get_queue(rid)      # from Redis
+    state = get_state(rid)      # from Redis
+    r['users'][request.sid] = {'username': username, 'color': color, 'sid': request.sid, 'uid': uid}
+    # Send room_state ONLY to the joining user — never broadcast to whole room
+    # Broadcasting room_state caused song restarts for everyone already in the room
     emit('room_state', {
         'queue':         queue,
         'chat_history':  r['chat_history'][-50:],
-        'users':         [
-            {k: v for k, v in u.items()
-             if k not in ('listen_start', 'listen_total_sec', 'joined_at', 'session_id')}
-            for u in r['users'].values()
-        ],
+        'users':         list(r['users'].values()),
         'current_index': state['current_index'],
-        'is_playing':    live_playing,
-        'current_time':  live_time,      # ← fresh, not stale Redis value
-        'session_id':    session_id,     # ← send back so client knows its own session
+        'is_playing':    state['is_playing'],
+        'current_time':  state['current_time'],
     }, to=request.sid)
-
-    # Ask existing players for a live sync ping (belt-and-suspenders)
-    if live_playing and state['current_index'] >= 0:
+    # If a song is actively playing, ask existing members to report their
+    # real current_time — Redis may be stale by several seconds
+    if state['is_playing'] and state['current_index'] >= 0:
         emit('request_sync', {'for_sid': request.sid}, to=rid, include_self=False)
-
-    msg = {'type': 'system', 'text': f'{username} joined ❄️', 'ts': now}
+    msg = {'type': 'system', 'text': f'{username} joined ❄️', 'ts': time.time()}
     r['chat_history'].append(msg)
     emit('chat_msg', msg, to=rid)
-    emit('user_joined', {
-        'username':   username,
-        'color':      color,
-        'sid':        request.sid,
-        'session_id': session_id,
-        'user_count': len(r['users']),
-    }, to=rid)
+    emit('user_joined', {'username': username, 'color': color,
+                         'sid': request.sid, 'user_count': len(r['users'])}, to=rid)
 
 
 @socketio.on('disconnect')
@@ -860,12 +798,6 @@ def on_disconnect():
         if request.sid in r['users']:
             user = r['users'].pop(request.sid)
             r['voice_peers'].pop(request.sid, None)
-            # Accumulate listen time before removal
-            if user.get('listen_start') is not None:
-                user['listen_total_sec'] += time.time() - user['listen_start']
-            total_min = round(user['listen_total_sec'] / 60, 1)
-            print(f"  ❄ {user['username']} (session {user.get('session_id','?')[:8]}) "
-                  f"listened {total_min}min in room '{rid}'")
             msg = {'type': 'system', 'text': f"{user['username']} left", 'ts': time.time()}
             r['chat_history'].append(msg)
             emit('chat_msg', msg, to=rid)
@@ -937,20 +869,13 @@ def on_play(data):
         idx = int(data.get('index', 0))
     except (TypeError, ValueError):
         idx = 0
+    # Clamp index to valid queue range
     if queue:
         idx = max(0, min(idx, len(queue) - 1))
     else:
         idx = -1
-    now = time.time()
     redis_set_state(rid, idx, True, 0)
-    r = get_room(rid)
-    r['last_sync'] = now
-    # Reset live playback in RAM — new song starts at 0
-    r['live_playback'] = {'current_time': 0.0, 'is_playing': True, 'updated_at': now}
-    # Start listen tracking for all users currently in the room
-    for u in r['users'].values():
-        if u.get('listen_start') is None:
-            u['listen_start'] = now
+    get_room(rid)['last_sync'] = time.time()
     emit('play_song', {'index': idx}, to=rid)
 
 
@@ -965,44 +890,52 @@ def on_sync_reply(data):
         emit('sync_from_peer', {
             'current_time': float(data.get('current_time', 0)),
             'is_playing':   bool(data.get('is_playing', True)),
-            'ts':           data.get('ts'),   # forward timestamp for latency correction
         }, to=target_sid)
 
 
 @socketio.on('player_sync')
 def on_sync(data):
-    rid        = sanitize_room_id(data.get('room', 'main'))
-    r          = get_room(rid)
-    now        = time.time()
-    is_playing = bool(data.get('is_playing', False))
-    cur_time   = float(data.get('current_time', 0))
-    r['last_sync'] = now
-
-    # ── Update live_playback RAM (used by get_live_time for joining users) ──
-    r['live_playback'] = {
-        'current_time': cur_time,
-        'is_playing':   is_playing,
-        'updated_at':   now,
-    }
-
-    # ── Track per-user listen duration ──
-    for u in r['users'].values():
-        if is_playing and u.get('listen_start') is None:
-            # Playback just resumed — start the clock
-            u['listen_start'] = now
-        elif not is_playing and u.get('listen_start') is not None:
-            # Paused — accumulate
-            u['listen_total_sec'] += now - u['listen_start']
-            u['listen_start'] = None
-
+    """Position-only heartbeat — does NOT change is_playing state.
+    Only updates current_time in Redis so joiners get a fresh position.
+    is_playing is only changed by play_song / pause_song / resume_song."""
+    rid = sanitize_room_id(data.get('room', 'main'))
+    r   = get_room(rid)
+    r['last_sync'] = time.time()
     state = get_state(rid)
-    redis_set_state(rid, state['current_index'], is_playing, cur_time)
-
+    # Only save time, keep existing is_playing
+    redis_set_state(rid, state['current_index'],
+                    state['is_playing'],
+                    data.get('current_time', 0))
+    # Only broadcast to others — sender already knows their own position
     emit('player_sync', {
         'room':         rid,
-        'is_playing':   is_playing,
-        'current_time': cur_time,
-        'ts':           data.get('ts'),
+        'current_time': float(data.get('current_time', 0)),
+        'ts':           data.get('ts', 0),
+    }, to=rid, include_self=False)
+
+
+@socketio.on('pause_song')
+def on_pause(data):
+    """Authoritative pause — updates server state and tells everyone."""
+    rid = sanitize_room_id(data.get('room', 'main'))
+    state = get_state(rid)
+    redis_set_state(rid, state['current_index'], False,
+                    data.get('current_time', state['current_time']))
+    emit('pause_song', {
+        'current_time': float(data.get('current_time', 0)),
+    }, to=rid, include_self=False)
+
+
+@socketio.on('resume_song')
+def on_resume(data):
+    """Authoritative resume — updates server state and tells everyone."""
+    rid = sanitize_room_id(data.get('room', 'main'))
+    state = get_state(rid)
+    redis_set_state(rid, state['current_index'], True,
+                    data.get('current_time', state['current_time']))
+    emit('resume_song', {
+        'current_time': float(data.get('current_time', 0)),
+        'ts':           data.get('ts', 0),
     }, to=rid, include_self=False)
 
 

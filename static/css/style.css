@@ -127,7 +127,7 @@ html,body { height:100%; font-family:'Outfit',sans-serif; background:var(--bg); 
 #app { position:relative;z-index:3;display:grid;grid-template-columns:280px 1fr 270px;grid-template-rows:56px 1fr;height:100vh; }
 
 /* ── Header ── */
-header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14px;background:rgba(4,7,26,.9);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);z-index:100;overflow:hidden; }
+header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14px;background:rgba(4,7,26,.9);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);z-index:100; }
 .logo { font-family:'Space Mono',monospace;font-size:.88rem;font-weight:700;color:var(--ice2);letter-spacing:2px;text-shadow:0 0 16px var(--glow);white-space:nowrap;flex-shrink:0;display:flex;align-items:center;gap:7px; }
 .logo span { color:var(--acc); }
 .logo-wolf-sm {
@@ -152,7 +152,8 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 #u-count { font-size:.74rem;color:var(--ice2); }
 
 /* Search results */
-#search-results { display:none;flex-direction:column;position:absolute;top:56px;left:280px;right:270px;background:rgba(4,7,26,.99);border:1px solid var(--bord);border-top:none;z-index:200;max-height:320px;overflow-y:auto;padding:8px;gap:5px; }
+#search-results { display:flex;flex-direction:column;position:absolute;top:56px;left:280px;right:270px;background:rgba(4,7,26,.99);border:1px solid var(--bord);border-top:none;z-index:200;max-height:320px;overflow-y:auto;padding:8px;gap:5px; }
+#search-results:empty { display:none; }
 #search-results.open { display:flex; }
 .res-msg  { padding:18px;color:var(--dim);text-align:center;font-size:.82rem; }
 .res-msg.err { color:var(--red); }
@@ -166,6 +167,15 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 .res-info  { flex:1;min-width:0; }
 .res-title { font-size:.79rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
 .res-chan  { font-size:.69rem;color:var(--dim); }
+.sr-item  { display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;border:1px solid transparent;transition:all .15s;cursor:pointer; }
+.sr-item:hover { background:rgba(96,165,250,.07);border-color:var(--bord); }
+.sr-item img  { width:62px;height:44px;border-radius:6px;object-fit:cover;flex-shrink:0;background:#1e3a8a; }
+.sr-info  { flex:1;min-width:0; }
+.sr-title { font-size:.79rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.sr-chan  { font-size:.69rem;color:var(--dim); }
+.sr-empty { padding:18px;color:var(--dim);text-align:center;font-size:.82rem; }
+.sr-add   { background:rgba(96,165,250,.12);border:1px solid rgba(96,165,250,.28);color:var(--ice2);border-radius:7px;padding:5px 11px;font-size:.75rem;font-family:'Outfit',sans-serif;font-weight:500;cursor:pointer;flex-shrink:0;transition:all .2s; }
+.sr-add:hover { background:rgba(96,165,250,.22);border-color:var(--ice1); }
 .btn-add-song { background:rgba(96,165,250,.12);border:1px solid rgba(96,165,250,.28);color:var(--ice2);border-radius:7px;padding:5px 11px;font-size:.75rem;font-family:'Outfit',sans-serif;font-weight:500;cursor:pointer;flex-shrink:0;transition:all .2s; }
 .btn-add-song:hover { background:rgba(96,165,250,.22);border-color:var(--ice1); }
 
@@ -235,6 +245,7 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 .q-del  { background:none;border:none;color:transparent;cursor:pointer;padding:2px 5px;border-radius:4px;font-size:.78rem;flex-shrink:0;transition:color .2s,background .2s; }
 .q-item:hover .q-del { color:var(--dim); }
 .q-del:hover { color:var(--red)!important;background:rgba(248,113,113,.1); }
+.q-item img  { width:44px;height:32px;border-radius:5px;object-fit:cover;flex-shrink:0;background:#1e3a8a; }
 
 /* ── Player Panel ── */
 #panel-player { display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:12px;overflow:hidden;position:relative; }
@@ -845,3 +856,15 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   .share-app svg { width: 18px; height: 18px; }
   #share-link-text { font-size: .66rem; }
 }
+
+/* ── Smooth modal → app transition ── */
+@keyframes modalFadeOut {
+  from { opacity:1; }
+  to   { opacity:0; pointer-events:none; }
+}
+@keyframes appFadeIn {
+  from { opacity:0; transform:translateY(8px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+.modal-exit { animation: modalFadeOut 0.35s ease forwards !important; }
+#app.app-enter { animation: appFadeIn 0.4s ease both; }

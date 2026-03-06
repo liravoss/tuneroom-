@@ -8,3 +8,4 @@ gevent>=24.2.1
 gevent-websocket>=0.10.1
 upstash-redis>=1.1.0
 flask-compress>=1.14
+yt-dlp>=2024.1.1

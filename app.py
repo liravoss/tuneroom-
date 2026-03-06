@@ -1089,7 +1089,14 @@ def _get_stream_ytdlp(video_id, fmt, qual):
             f'/best'
         )
 
+    import pathlib
+    cookies_path = pathlib.Path(__file__).parent / 'cookies.txt'
     base_cmd = ['yt-dlp', '--no-playlist', '--no-warnings']
+    if cookies_path.exists():
+        base_cmd += ['--cookies', str(cookies_path)]
+        print('[yt-dlp] using cookies.txt', flush=True)
+    else:
+        print('[yt-dlp] no cookies.txt found — may fail on Render', flush=True)
 
     # Get title
     try:

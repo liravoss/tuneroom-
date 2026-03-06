@@ -1090,7 +1090,11 @@ def _get_stream_ytdlp(video_id, fmt, qual):
         )
 
     import pathlib
+    # Check Render secret file first, then fall back to local cookies.txt
     cookies_path = pathlib.Path('/etc/secrets/cookies.txt')
+    if not cookies_path.exists():
+        cookies_path = pathlib.Path(__file__).parent / 'cookies.txt'
+    print(f'[yt-dlp] cookies path: {cookies_path} | exists: {cookies_path.exists()}', flush=True)
     base_cmd = ['yt-dlp', '--no-playlist', '--no-warnings']
     if cookies_path.exists():
         base_cmd += ['--cookies', str(cookies_path)]

@@ -483,16 +483,12 @@
   // ── Download ──────────────────────────────────────────────────────────────────
   function openDownload(){
     if(!currentSong){ toast('No song playing'); return; }
-    const modal = document.getElementById('download-modal');
-    if(!modal) return;
-    // Set song name
     const nameEl = document.getElementById('download-song-name');
     if(nameEl) nameEl.textContent = currentSong.title || 'Download';
-    // Reset to defaults
     _dlSetFormat('mp4');
     _dlSetVideoQual('720');
     _dlSetAudioQual('192');
-    modal.classList.add('open');
+    document.getElementById('download-modal')?.classList.add('open');
   }
 
   function _dlSetFormat(fmt){
@@ -511,49 +507,48 @@
     document.querySelectorAll('#download-audio-row .dl-qual-btn').forEach(b=>b.classList.toggle('active', b.dataset.qual===q));
   }
 
-  function _dlGetActive(selector){
-    return document.querySelector(selector+' .dl-qual-btn.active')?.dataset.qual || null;
-  }
-
-  function _dlGo(){
+  async function _dlGo(){
     if(!currentSong) return;
     const fmt  = document.querySelector('.dl-fmt-btn.active')?.dataset.fmt || 'mp4';
-    const qual = fmt==='mp4' ? _dlGetActive('#download-quality-row') : _dlGetActive('#download-audio-row');
+    const qual = fmt==='mp4'
+      ? document.querySelector('#download-quality-row .dl-qual-btn.active')?.dataset.qual || '720'
+      : document.querySelector('#download-audio-row .dl-qual-btn.active')?.dataset.qual || '192';
     const videoId = currentSong.id;
-    // cobalt.tools supports quality via URL params
-    let url;
-    if(fmt==='mp3'){
-      url = `https://cobalt.tools/#https://youtube.com/watch?v=${videoId}`;
-    } else {
-      url = `https://cobalt.tools/#https://youtube.com/watch?v=${videoId}`;
+    const label = document.getElementById('download-go-label');
+    if(label){ label.textContent = '⏳ Preparing…'; }
+    const goBtn = document.getElementById('download-go-btn');
+    if(goBtn) goBtn.disabled = true;
+    try {
+      const url = `/api/download?id=${videoId}&fmt=${fmt}&qual=${qual}`;
+      const res = await fetch(url);
+      if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||'Server error'); }
+      const blob = await res.blob();
+      const ext  = fmt==='mp3' ? 'mp3' : 'mp4';
+      const filename = (currentSong.title||'download').replace(/[^a-z0-9 _-]/gi,'_')+'.'+ext;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      toast('Download started! ❄');
+      document.getElementById('download-modal')?.classList.remove('open');
+    } catch(err){
+      toast('Download failed: '+err.message);
+    } finally {
+      if(label){ label.textContent = '⬇ Download'; }
+      if(goBtn) goBtn.disabled = false;
     }
-    // Store prefs in label so user knows what they picked
-    const label = fmt==='mp3' ? `MP3 ${qual}kbps` : `MP4 ${qual}p`;
-    toast(`Opening download: ${label}`);
-    window.open(url, '_blank');
-    document.getElementById('download-modal')?.classList.remove('open');
   }
 
   function _wireDownloadModal(){
-    // Format buttons
-    document.querySelectorAll('.dl-fmt-btn').forEach(b=>{
-      b.onclick = ()=> _dlSetFormat(b.dataset.fmt);
-    });
-    // Video quality buttons
-    document.querySelectorAll('#download-quality-row .dl-qual-btn').forEach(b=>{
-      b.onclick = ()=> _dlSetVideoQual(b.dataset.qual);
-    });
-    // Audio quality buttons
-    document.querySelectorAll('#download-audio-row .dl-qual-btn').forEach(b=>{
-      b.onclick = ()=> _dlSetAudioQual(b.dataset.qual);
-    });
-    // Close
+    document.querySelectorAll('.dl-fmt-btn').forEach(b=>{ b.onclick=()=>_dlSetFormat(b.dataset.fmt); });
+    document.querySelectorAll('#download-quality-row .dl-qual-btn').forEach(b=>{ b.onclick=()=>_dlSetVideoQual(b.dataset.qual); });
+    document.querySelectorAll('#download-audio-row .dl-qual-btn').forEach(b=>{ b.onclick=()=>_dlSetAudioQual(b.dataset.qual); });
     const closeBtn = document.getElementById('download-close');
-    if(closeBtn) closeBtn.onclick = ()=> document.getElementById('download-modal')?.classList.remove('open');
-    // Backdrop click
+    if(closeBtn) closeBtn.onclick = ()=>document.getElementById('download-modal')?.classList.remove('open');
     const modal = document.getElementById('download-modal');
     if(modal) modal.onclick = e=>{ if(e.target===modal) modal.classList.remove('open'); };
-    // Go button
     const goBtn = document.getElementById('download-go-btn');
     if(goBtn) goBtn.onclick = _dlGo;
   }
@@ -800,30 +795,20 @@ function initMobileTabs(){
   const tabs = document.querySelectorAll('.mob-tab');
   if (!tabs.length) return;
 
-  function initMobileTabs(){
-  const tabs = document.querySelectorAll('.mob-tab');
-  if (!tabs.length) return;
-
   function showPanel(panelId) {
-    // Hide ALL panels
     document.querySelectorAll('#panel-player, #panel-queue, #panel-chat').forEach(el => {
       el.style.display = 'none';
     });
-
-    // Show the requested one
     const target = document.getElementById(panelId);
     if (target) {
       target.style.display = 'flex';
-
-      // Critical fix for YouTube iframe visibility on mobile tab switch
       setTimeout(() => {
-        target.offsetHeight;  // Force browser reflow
-        window.dispatchEvent(new Event('resize'));  // YouTube API resize trigger
+        target.offsetHeight;
+        window.dispatchEvent(new Event('resize'));
         if (ytPlayer && ytReady) {
-          // Explicitly set size to current panel dimensions
           ytPlayer.setSize(target.clientWidth, target.clientHeight);
         }
-      }, 100);  // 100ms delay — gives time for display to apply
+      }, 100);
     }
   }
 
@@ -836,29 +821,6 @@ function initMobileTabs(){
     };
   });
 
-  // Auto-activate Player on mobile load
-  if (window.innerWidth <= 768) {
-    const playerTab = document.querySelector('.mob-tab[data-tab="player"]');
-    if (playerTab) {
-      playerTab.classList.add('active');
-      showPanel('panel-player');
-    }
-  }
-}
-
-  tabs.forEach(tab => {
-    tab.onclick = () => {
-      // Update tab styles
-      tabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-
-      // Show correct panel
-      const which = tab.dataset.tab;
-      showPanel('panel-' + which);
-    };
-  });
-
-  // On mobile load → force Player tab active + visible
   if (window.innerWidth <= 768) {
     const playerTab = document.querySelector('.mob-tab[data-tab="player"]');
     if (playerTab) {

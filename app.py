@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_compress import Compress
 import os, time, json, requests
@@ -1019,6 +1019,74 @@ def on_voice_signal(data):
     if target and (target in r['users'] or target in r.get('voice_peers', {})):
         emit('voice_signal', {'from': request.sid, 'signal': data.get('signal')},
              to=target)
+
+
+@app.route('/api/download')
+def api_download():
+    video_id = request.args.get('id', '').strip()
+    fmt      = request.args.get('fmt', 'mp4').strip()   # mp4 or mp3
+    qual     = request.args.get('qual', '720').strip()  # 360/720/1080 or 128/192/320
+
+    if not video_id:
+        return jsonify({'error': 'No video ID'}), 400
+
+    yt_url = f'https://www.youtube.com/watch?v={video_id}'
+
+    # Build yt-dlp format selector
+    if fmt == 'mp3':
+        abr = qual  # kbps
+        ydl_format  = 'bestaudio/best'
+        postprocess = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': abr}]
+        ext = 'mp3'
+    else:
+        h = qual  # e.g. 720
+        ydl_format  = f'bestvideo[height<={h}]+bestaudio/best[height<={h}]'
+        postprocess = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
+        ext = 'mp4'
+
+    try:
+        import yt_dlp, tempfile, glob
+        with tempfile.TemporaryDirectory() as tmp:
+            out_tmpl = f'{tmp}/%(title)s.%(ext)s'
+            ydl_opts = {
+                'format':            ydl_format,
+                'outtmpl':           out_tmpl,
+                'postprocessors':    postprocess,
+                'quiet':             True,
+                'no_warnings':       True,
+                'merge_output_format': ext,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(yt_url, download=True)
+                title = info.get('title', video_id)
+
+            files = glob.glob(f'{tmp}/*.{ext}')
+            if not files:
+                # fallback — grab any file
+                files = glob.glob(f'{tmp}/*')
+            if not files:
+                return jsonify({'error': 'Download produced no file'}), 500
+
+            filepath = files[0]
+            safe_title = ''.join(c if c.isalnum() or c in ' _-' else '_' for c in title)
+            filename = f'{safe_title}.{ext}'
+
+            with open(filepath, 'rb') as f:
+                data = f.read()
+
+        mime = 'audio/mpeg' if ext == 'mp3' else 'video/mp4'
+        return Response(
+            data,
+            mimetype=mime,
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Content-Length': str(len(data)),
+            }
+        )
+    except ImportError:
+        return jsonify({'error': 'yt-dlp not installed. Run: pip install yt-dlp'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

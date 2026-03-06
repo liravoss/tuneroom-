@@ -765,11 +765,12 @@ def on_join(data):
     rid      = sanitize_room_id(data.get('room', 'main'))
     username = sanitize_text(data.get('username', 'Anonymous'), maxlen=20)
     color    = sanitize_color(data.get('color', '#60a5fa'))
+    uid      = sanitize_text(str(data.get('uid', request.sid)), maxlen=30)
     join_room(rid)
     r     = get_room(rid)
     queue = get_queue(rid)      # from Redis
     state = get_state(rid)      # from Redis
-    r['users'][request.sid] = {'username': username, 'color': color, 'sid': request.sid}
+    r['users'][request.sid] = {'username': username, 'color': color, 'sid': request.sid, 'uid': uid}
     # Send room_state ONLY to the joining user — never broadcast to whole room
     # Broadcasting room_state caused song restarts for everyone already in the room
     emit('room_state', {
@@ -1002,4 +1003,3 @@ if __name__ == '__main__':
     print(f'  Lyrics         : ✓ ON (5 sources)')
     print()
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
-    

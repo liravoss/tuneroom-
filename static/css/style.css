@@ -127,7 +127,7 @@ html,body { height:100%; font-family:'Outfit',sans-serif; background:var(--bg); 
 #app { position:relative;z-index:3;display:grid;grid-template-columns:280px 1fr 270px;grid-template-rows:56px 1fr;height:100vh; }
 
 /* ── Header ── */
-header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14px;background:rgba(4,7,26,.9);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);z-index:100; }
+header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14px;background:rgba(4,7,26,.9);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);z-index:100;overflow:hidden; }
 .logo { font-family:'Space Mono',monospace;font-size:.88rem;font-weight:700;color:var(--ice2);letter-spacing:2px;text-shadow:0 0 16px var(--glow);white-space:nowrap;flex-shrink:0;display:flex;align-items:center;gap:7px; }
 .logo span { color:var(--acc); }
 .logo-wolf-sm {
@@ -139,14 +139,14 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   flex-shrink: 0;
 }
 
-.search-bar { flex:1;display:flex;gap:6px;max-width:440px;margin:0 auto; }
+.search-bar { flex:1;display:flex;gap:6px;max-width:440px;margin-left:auto;margin-right:auto;min-width:0; }
 .search-bar input { flex:1;background:rgba(8,15,45,.8);border:1px solid var(--bord);border-radius:9px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:.84rem;outline:none;transition:border-color .2s; }
 .search-bar input:focus { border-color:var(--ice1); }
 .search-bar input::placeholder { color:var(--dim); }
 #btn-search { background:linear-gradient(135deg,var(--ice1),var(--acc));border:none;border-radius:9px;padding:7px 14px;color:#04071a;font-family:'Outfit',sans-serif;font-weight:600;font-size:.84rem;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:opacity .2s; }
 #btn-search:hover { opacity:.85; }
 
-.hdr-right { display:flex;align-items:center;gap:8px;flex-shrink:0; }
+.hdr-right { display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:auto; }
 
 .badge { font-size:.68rem;background:var(--glass);border:1px solid var(--bord);border-radius:20px;padding:3px 10px;color:var(--dim); }
 #u-count { font-size:.74rem;color:var(--ice2); }
@@ -488,7 +488,8 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   }
   .logo { font-size: .75rem; letter-spacing: 1px; }
   .logo-wolf-sm { width: 24px; height: 24px; }
-  .hdr-right { display: none; } /* hide user count on mobile */
+  .hdr-right { display: flex; } /* keep share button visible on mobile */
+  #u-count { display: none; } /* hide user count on mobile only */
 
   .search-bar { max-width: unset; }
   .search-bar input { font-size: .78rem; padding: 6px 9px; }

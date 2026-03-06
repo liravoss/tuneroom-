@@ -16,6 +16,15 @@ var voiceOn     = false, muted = false, localStream = null, peers = {};
 var sortableInstance = null;
 var msgN        = 0;
 
+// ── Per-user sync offset (UUID-based, never shared) ──────────
+// Each user gets a unique uid. We store:
+//   syncOffset.wallStart  = Date.now() when we locked onto song position
+//   syncOffset.songStart  = song position (seconds) at that moment
+// Expected position at any time = songStart + (Date.now() - wallStart) / 1000
+var MY_UID   = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+var syncOffset = null;   // null = not synced yet
+var syncCheckTimer = null;
+
 var COLORS = ['#60a5fa','#34d399','#f472b6','#fb923c','#a78bfa','#facc15','#38bdf8','#f87171'];
 var EMOJI  = ['❤️','🔥','😂','👏','❄️','🎵'];
 var selCol = COLORS[0];
@@ -65,10 +74,10 @@ function initSocket(){
   socket = io();
 
   socket.on('connect', function(){
-    socket.emit('join',{ room:ME.room, username:ME.name, color:ME.color });
+    socket.emit('join',{ room:ME.room, username:ME.name, color:ME.color, uid:MY_UID });
   });
   socket.on('reconnect', function(){
-    if(ME.name) socket.emit('join',{ room:ME.room, username:ME.name, color:ME.color });
+    if(ME.name) socket.emit('join',{ room:ME.room, username:ME.name, color:ME.color, uid:MY_UID });
   });
 
   // Received when we join — sync us silently, never emit to room
@@ -99,13 +108,17 @@ function initSocket(){
     waitForPlayer(function(){ ytPlayer.loadVideoById(currentSong.id); });
   });
 
-  // Periodic sync — only seek if badly out of sync
+  // Periodic sync — only seek if badly out of sync, never force play/pause
   socket.on('player_sync', function(d){
     if(isJoining||!ytReady||!ytPlayer) return;
-    var st=ytPlayer.getPlayerState(), ct=ytPlayer.getCurrentTime();
-    if(Math.abs(ct-(d.current_time||0))>5) ytPlayer.seekTo(d.current_time,true);
-    if(d.is_playing  && st!==YT.PlayerState.PLAYING) ytPlayer.playVideo();
-    if(!d.is_playing && st===YT.PlayerState.PLAYING)  ytPlayer.pauseVideo();
+    var st  = ytPlayer.getPlayerState();
+    var ct  = ytPlayer.getCurrentTime();
+    var rt  = parseFloat(d.current_time)||0;
+    // Only seek if badly drifted — normal buffering causes small diffs
+    if(Math.abs(ct - rt) > 8) ytPlayer.seekTo(rt, true);
+    // Only force state change if clearly mismatched (not just buffering)
+    if(d.is_playing && st === YT.PlayerState.PAUSED)  ytPlayer.playVideo();
+    if(!d.is_playing && st === YT.PlayerState.PLAYING) ytPlayer.pauseVideo();
   });
 
   socket.on('chat_msg', addChatMsg);
@@ -116,23 +129,40 @@ function initSocket(){
   socket.on('request_sync', function(d){
     if(!ytReady||!ytPlayer||isJoining) return;
     var st = ytPlayer.getPlayerState();
+    // Only reply if we're actually playing — don't send stale data
+    if(st !== YT.PlayerState.PLAYING) return;
     socket.emit('sync_reply',{
-      room:       ME.room,
-      for_sid:    d.for_sid,
+      room:         ME.room,
+      for_sid:      d.for_sid,
+      uid:          MY_UID,
       current_time: ytPlayer.getCurrentTime(),
-      is_playing: st===YT.PlayerState.PLAYING
+      is_playing:   true
     });
   });
 
-  // New user: received fresh current_time from an existing peer — seek to it
+  // New user: received fresh current_time from an existing peer
+  // Only process the FIRST reply we get (fastest peer) — ignore duplicates
+  var syncFromPeerDone = false;
   socket.on('sync_from_peer', function(d){
-    if(!ytReady||!ytPlayer) return;
-    // Add another small buffer since there's still some network delay
-    var target = (parseFloat(d.current_time)||0) + 0.8;
-    waitForPlayer(function(){
-      ytPlayer.seekTo(target, true);
-      if(d.is_playing) ytPlayer.playVideo();
-    });
+    if(syncFromPeerDone) return;  // already handled
+    syncFromPeerDone = true;
+    // Wait for joinSync to finish loading before seeking
+    // Don't call playVideo here — joinSync handles play state
+    var checkReady = setInterval(function(){
+      if(!ytReady||!ytPlayer) return;
+      var st = ytPlayer.getPlayerState();
+      if(st === YT.PlayerState.PLAYING || st === YT.PlayerState.PAUSED || st === YT.PlayerState.BUFFERING){
+        clearInterval(checkReady);
+        // Peer's time + small network RTT buffer
+        var target = (parseFloat(d.current_time)||0) + 1.0;
+        ytPlayer.seekTo(target, true);
+        lockSyncOffset(target);
+        startSyncCheck();
+        setTimeout(function(){ syncFromPeerDone = false; }, 5000);
+      }
+    }, 300);
+    // Give up after 5s if player never readies
+    setTimeout(function(){ clearInterval(checkReady); syncFromPeerDone = false; }, 5000);
   });
 
   socket.on('voice_peer_joined', function(d){
@@ -179,13 +209,19 @@ window.onYouTubeIframeAPIReady = function(){
         var S=YT.PlayerState;
         if(e.data===S.PLAYING){
           $('btn-pp').textContent='⏸'; retryCount=0; clearRetry();
-          if(!isJoining) emitSync();
+          // Lock our personal offset so drift checker works correctly
+          if(!isJoining){
+            lockSyncOffset(ytPlayer.getCurrentTime());
+            startSyncCheck();
+            emitSync();
+          }
         } else if(e.data===S.PAUSED){
           $('btn-pp').textContent='▶';
-          // cancel any pending retry when the user (or a sync) pauses playback
+          stopSyncCheck();
           clearRetry();
           if(!isJoining) emitSync();
         } else if(e.data===S.ENDED){
+          stopSyncCheck();
           if(!isJoining) nextSong();
         } else if(e.data===-1){
           if(!isJoining) scheduleRetry();
@@ -201,27 +237,69 @@ window.onYouTubeIframeAPIReady = function(){
   });
 };
 
+// ── Sync offset helpers ───────────────────────────────────────
+function lockSyncOffset(songPosSec){
+  syncOffset = { wallStart: Date.now(), songStart: parseFloat(songPosSec)||0 };
+}
+function expectedPos(){
+  if(!syncOffset) return 0;
+  return syncOffset.songStart + (Date.now() - syncOffset.wallStart) / 1000;
+}
+function clearSyncOffset(){ syncOffset = null; }
+
+// Periodic drift check — runs every 3s while song is playing
+// Uses each user's own offset — never touches another user's state
+function startSyncCheck(){
+  if(syncCheckTimer) clearInterval(syncCheckTimer);
+  syncCheckTimer = setInterval(function(){
+    if(!ytReady||!ytPlayer||isJoining||!syncOffset) return;
+    var st = ytPlayer.getPlayerState();
+    if(st !== YT.PlayerState.PLAYING) return;
+    var actual   = ytPlayer.getCurrentTime();
+    var expected = expectedPos();
+    var drift    = Math.abs(actual - expected);
+    // Only correct if drift > 2.5s — small drift is normal buffering
+    if(drift > 2.5){
+      ytPlayer.seekTo(expected, true);
+    }
+  }, 3000);
+}
+function stopSyncCheck(){
+  if(syncCheckTimer){ clearInterval(syncCheckTimer); syncCheckTimer=null; }
+  clearSyncOffset();
+}
+
 // ── Join sync — load at room position, never emit ────────────
 function joinSync(videoId, seekSec, roomIsPlaying){
   isJoining = true;
+  stopSyncCheck();
   seekSec = Math.max(0, parseFloat(seekSec)||0);
-  // Add ~1.5s buffer to compensate for load time so new user lands in sync
-  var buffered = roomIsPlaying ? seekSec + 1.5 : seekSec;
+  // Add 2s buffer to compensate for load time
+  var loadBuffer = roomIsPlaying ? 2.0 : 0;
+  var startAt    = seekSec + loadBuffer;
+
   waitForPlayer(function(){
-    ytPlayer.loadVideoById({ videoId:videoId, startSeconds:Math.floor(buffered) });
-    var done=false;
-    var t=setInterval(function(){
+    ytPlayer.loadVideoById({ videoId: videoId, startSeconds: Math.floor(startAt) });
+    var done = false;
+    var t = setInterval(function(){
       if(done) return;
-      var st=ytPlayer.getPlayerState();
-      if(st===YT.PlayerState.PLAYING||st===YT.PlayerState.BUFFERING){
+      var st = ytPlayer.getPlayerState();
+      if(st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING){
         if(!roomIsPlaying){ ytPlayer.pauseVideo(); }
-        done=true; clearInterval(t); isJoining=false;
-      } else if(st===YT.PlayerState.PAUSED){
-        done=true; clearInterval(t); isJoining=false;
+        else {
+          // Lock our personal offset to actual player time
+          lockSyncOffset(ytPlayer.getCurrentTime());
+          startSyncCheck();
+        }
+        done = true; clearInterval(t); isJoining = false;
+      } else if(st === YT.PlayerState.PAUSED){
+        done = true; clearInterval(t); isJoining = false;
       }
-    },200);
-    // Increased to 6s safety timeout for slow connections
-    setTimeout(function(){ if(!done){ clearInterval(t); isJoining=false; } },6000);
+    }, 200);
+    // 6s safety timeout for slow connections
+    setTimeout(function(){
+      if(!done){ clearInterval(t); isJoining = false; }
+    }, 6000);
   });
 }
 
@@ -246,6 +324,7 @@ function clearRetry(){ if(retryTimer){ clearTimeout(retryTimer); retryTimer=null
 function loadAndPlay(idx){
   if(!queue.length||idx<0||idx>=queue.length) return;
   isJoining=false; curIdx=idx; retryCount=0; clearRetry();
+  stopSyncCheck();
   currentSong=queue[idx]; updateNowPlaying(currentSong); renderQueue(); applyVideoMode();
   waitForPlayer(function(){
     ytPlayer.loadVideoById(currentSong.id);

@@ -198,13 +198,10 @@ def room(room_id):
 # Multiple Invidious public instances — tries each if one is down
 INVIDIOUS_INSTANCES = [
     'https://inv.nadeko.net',
-    'https://invidious.privacyredirect.com',
+    'https://yewtu.be',
     'https://invidious.nerdvpn.de',
-    'https://inv.tux.pizza',
-    'https://invidious.io.lol',
-    'https://invidious.fdn.fr',
+    'https://invidious.privacyredirect.com',
     'https://iv.melmac.space',
-    'https://invidious.perennialte.ch',
 ]
 
 def _search_youtube_key(q, key):
@@ -300,17 +297,39 @@ def _search_invidious(q):
     return None
 
 
-# Multiple Piped instances
-PIPED_INSTANCES = [
+def _get_piped_instances():
+    """Fetch live Piped instance list — cached 6 hours."""
+    now = time.time()
+    if hasattr(_get_piped_instances, '_cache'):
+        cached, ts = _get_piped_instances._cache
+        if now - ts < 21600:
+            return cached
+    try:
+        r = requests.get('https://piped-instances-api.vercel.app/api/instances', timeout=8)
+        if r.ok:
+            data = r.json()
+            instances = [inst['api'] for inst in data
+                         if inst.get('api') and not inst.get('down', False)]
+            if instances:
+                _get_piped_instances._cache = (instances, now)
+                return instances
+    except Exception:
+        pass
+    return []
+
+PIPED_INSTANCES_FALLBACK = [
     'https://pipedapi.kavin.rocks',
-    'https://pipedapi.adminforge.de',
-    'https://piped-api.garudalinux.org',
-    'https://api.piped.yt',
-    'https://pipedapi.in.projectsegfau.lt',
-    'https://piped.video/api',
-    'https://pipedapi.drgns.space',
-    'https://pipedapi.kescher.at',
+    'https://pipedapi.tokhmi.xyz',
+    'https://pipedapi.moomoo.me',
+    'https://pipedapi.leptons.xyz',
+    'https://pipedapi.nosebs.ru',
 ]
+
+# Multiple Piped instances
+PIPED_INSTANCES = PIPED_INSTANCES_FALLBACK
+
+# Set ENABLE_PUBLIC_PROXIES=false in env to skip Invidious/Piped (reduces noise)
+ENABLE_PUBLIC_PROXIES = os.environ.get('ENABLE_PUBLIC_PROXIES', 'true').lower() != 'false'
 
 def _search_piped(q):
     """Search using Piped API — no key needed."""
@@ -1028,8 +1047,202 @@ def on_voice_signal(data):
              to=target)
 
 
+def _check_ytdlp():
+    """Check if yt-dlp is installed and return version string or None."""
+    import subprocess
+    try:
+        r = subprocess.run(['yt-dlp', '--version'],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return None
+
+
+def _get_stream_ytdlp(video_id, fmt, qual):
+    """
+    Primary download method — yt-dlp subprocess.
+    Handles ciphers, throttling, client rotation automatically.
+    Returns (stream_url, title, error_msg) — error_msg is None on success.
+    """
+    import subprocess
+
+    ytdlp_version = _check_ytdlp()
+    if not ytdlp_version:
+        return None, None, 'yt-dlp not installed on server (run: pip install yt-dlp)'
+
+    print(f'[yt-dlp] version {ytdlp_version}', flush=True)
+
+    yt_url = f'https://www.youtube.com/watch?v={video_id}'
+
+    # Format selector with multiple fallbacks
+    if fmt == 'mp3':
+        format_str = 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
+    else:
+        format_str = (
+            f'bestvideo[height<={qual}][ext=mp4]+bestaudio[ext=m4a]'
+            f'/bestvideo[height<={qual}]+bestaudio'
+            f'/best[height<={qual}]'
+            f'/best'
+        )
+
+    base_cmd = ['yt-dlp', '--no-playlist', '--no-warnings']
+
+    # Get title
+    try:
+        title_r = subprocess.run(
+            base_cmd + ['--get-title', yt_url],
+            capture_output=True, text=True, timeout=15
+        )
+        title = title_r.stdout.strip() or video_id
+    except Exception:
+        title = video_id
+
+    # Get stream URL
+    try:
+        url_r = subprocess.run(
+            base_cmd + ['--get-url', '-f', format_str, yt_url],
+            capture_output=True, text=True, timeout=25
+        )
+        if url_r.returncode != 0:
+            err = url_r.stderr.strip()[:300]
+            print(f'[yt-dlp] failed (rc={url_r.returncode}): {err}', flush=True)
+            return None, None, f'yt-dlp error: {err}'
+
+        # May return multiple lines (video URL + audio URL for merged formats)
+        # Take the first — we proxy it as-is (pre-muxed or audio-only)
+        stream_url = url_r.stdout.strip().split('\n')[0].strip()
+        if stream_url:
+            print(f'[yt-dlp] OK for {video_id} fmt={fmt} qual={qual}', flush=True)
+            return stream_url, title, None
+
+        return None, None, 'yt-dlp returned empty URL'
+
+    except subprocess.TimeoutExpired:
+        return None, None, 'yt-dlp timed out (>25s)'
+    except Exception as e:
+        return None, None, f'yt-dlp exception: {e}'
+
+
+def _get_stream_youtube_internal(video_id, fmt, qual):
+    """Try multiple YouTube innertube clients to get a direct stream URL."""
+    CLIENTS = [
+        {
+            'clientName': 'ANDROID',
+            'clientVersion': '19.49.37',
+            'client_name_id': '3',
+            'androidSdkVersion': 34,
+            'userAgent': 'com.google.android.youtube/19.49.37 (Linux; U; Android 14) gzip',
+        },
+        {
+            'clientName': 'ANDROID',
+            'clientVersion': '19.09.37',
+            'client_name_id': '3',
+            'androidSdkVersion': 30,
+            'userAgent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+        },
+        {
+            'clientName': 'TVHTML5',
+            'clientVersion': '7.20250303.08.00',
+            'client_name_id': '85',
+            'userAgent': 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1',
+        },
+        {
+            'clientName': 'WEB',
+            'clientVersion': '2.20250303.01.00',
+            'client_name_id': '1',
+            'userAgent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        {
+            'clientName': 'WEB_EMBEDDED_PLAYER',
+            'clientVersion': '2.20250225.01.00',
+            'client_name_id': '56',
+            'userAgent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+    ]
+
+    for client in CLIENTS:
+        try:
+            ctx = {
+                'clientName': client['clientName'],
+                'clientVersion': client['clientVersion'],
+                'hl': 'en', 'gl': 'US',
+            }
+            if 'androidSdkVersion' in client:
+                ctx['androidSdkVersion'] = client['androidSdkVersion']
+
+            payload = {
+                'context': {'client': ctx},
+                'videoId': video_id,
+                'racyCheckOk': True,
+                'contentCheckOk': True,
+            }
+            resp = requests.post(
+                'https://www.youtube.com/youtubei/v1/player',
+                params={'prettyPrint': 'false'},
+                json=payload, timeout=12,
+                headers={
+                    'User-Agent': client['userAgent'],
+                    'Content-Type': 'application/json',
+                    'X-YouTube-Client-Name': client['client_name_id'],
+                    'X-YouTube-Client-Version': client['clientVersion'],
+                    'Origin': 'https://www.youtube.com',
+                }
+            )
+            if not resp.ok:
+                print(f'[yt-internal] {client["clientName"]} HTTP {resp.status_code}', flush=True)
+                continue
+
+            data = resp.json()
+            title = data.get('videoDetails', {}).get('title', video_id)
+            streaming = data.get('streamingData', {})
+
+            all_streams = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
+            sample = all_streams[0] if all_streams else {}
+            has_url    = bool(sample.get('url'))
+            has_cipher = bool(sample.get('signatureCipher') or sample.get('cipher'))
+            print(f'[yt-internal] {client["clientName"]} — url:{has_url} cipher:{has_cipher}', flush=True)
+
+            if has_cipher:
+                continue  # Can't decode without yt-dlp
+
+            if fmt == 'mp3':
+                streams = [s for s in streaming.get('adaptiveFormats', [])
+                           if s.get('mimeType', '').startswith('audio/') and s.get('url')]
+                streams.sort(key=lambda s: s.get('averageBitrate', s.get('bitrate', 0)), reverse=True)
+                idx = min({'320': 0, '192': 1, '128': 2}.get(qual, 0), max(len(streams) - 1, 0))
+                if streams:
+                    print(f'[yt-internal] {client["clientName"]} OK (audio)', flush=True)
+                    return streams[idx].get('url'), title
+            else:
+                streams = [s for s in streaming.get('formats', []) if s.get('url')]
+                qual_int = int(qual)
+                best = None
+                for s in streams:
+                    h = s.get('height', 0) or 0
+                    if h <= qual_int:
+                        if best is None or h > (best.get('height') or 0):
+                            best = s
+                if not best and streams:
+                    best = max(streams, key=lambda s: s.get('height', 0) or 0)
+                if best:
+                    print(f'[yt-internal] {client["clientName"]} OK ({best.get("qualityLabel")})', flush=True)
+                    return best.get('url'), title
+
+            print(f'[yt-internal] {client["clientName"]} — no usable direct URL', flush=True)
+
+        except Exception as e:
+            print(f'[yt-internal] {client["clientName"]} error: {e}', flush=True)
+
+    return None, None
+
+
 @app.route('/api/download')
 def api_download():
+    from flask import stream_with_context
     video_id = request.args.get('id', '').strip()
     fmt      = request.args.get('fmt', 'mp4').strip()
     qual     = request.args.get('qual', '720').strip()
@@ -1041,61 +1254,67 @@ def api_download():
     video_title = video_id
     errors      = []
 
-    # ── Try Invidious instances ──────────────────────────────────
-    for instance in INVIDIOUS_INSTANCES:
-        try:
-            resp = requests.get(
-                f'{instance}/api/v1/videos/{video_id}',
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if not resp.ok:
-                errors.append(f'Invidious {instance}: HTTP {resp.status_code}')
-                continue
-            data = resp.json()
-            if 'error' in data:
-                errors.append(f'Invidious {instance}: {data["error"]}')
-                continue
-            video_title = data.get('title', video_id)
-
-            if fmt == 'mp3':
-                streams = [s for s in data.get('adaptiveFormats', []) if s.get('type','').startswith('audio/')]
-                streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
-                qual_idx = {'320': 0, '192': 1, '128': 2}
-                idx = min(qual_idx.get(qual, 0), max(len(streams)-1, 0))
-                if streams:
-                    stream_url = streams[idx].get('url')
-            else:
-                combined = data.get('formatStreams', [])
-                qual_int = int(qual)
-                best = None
-                for s in combined:
-                    h = int(s.get('resolution','0p').replace('p','') or 0)
-                    if h <= qual_int:
-                        if best is None or h > int(best.get('resolution','0p').replace('p','') or 0):
-                            best = s
-                if not best and combined:
-                    best = combined[0]
-                if best:
-                    stream_url = best.get('url')
-
-            if stream_url:
-                print(f'[download] Got stream from Invidious: {instance}', flush=True)
-                break
-            else:
-                errors.append(f'Invidious {instance}: no stream found in response')
-        except Exception as e:
-            errors.append(f'Invidious {instance}: {e}')
-            continue
-
-    # ── Try Piped instances ──────────────────────────────────────
+    # ── 1. yt-dlp (primary — handles ciphers automatically) ──────
+    stream_url, video_title, ytdlp_err = _get_stream_ytdlp(video_id, fmt, qual)
     if not stream_url:
-        for instance in PIPED_INSTANCES:
+        errors.append(f'yt-dlp: {ytdlp_err}')
+
+    # ── 2. YouTube internal innertube clients ─────────────────────
+    if not stream_url:
+        stream_url, video_title = _get_stream_youtube_internal(video_id, fmt, qual)
+        if not stream_url:
+            errors.append('YouTube internal: all clients returned cipher or no direct URL')
+
+    # ── 3. Invidious + Piped (optional, env-controlled) ───────────
+    if not stream_url and ENABLE_PUBLIC_PROXIES:
+        for instance in INVIDIOUS_INSTANCES:
             try:
                 resp = requests.get(
-                    f'{instance}/streams/{video_id}',
-                    timeout=8,
-                    headers={'User-Agent': 'Mozilla/5.0'}
+                    f'{instance.rstrip("/")}/api/v1/videos/{video_id}',
+                    timeout=8, headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                if not resp.ok:
+                    errors.append(f'Invidious {instance}: HTTP {resp.status_code}')
+                    continue
+                data = resp.json()
+                if 'error' in data:
+                    errors.append(f'Invidious {instance}: {data["error"]}')
+                    continue
+                video_title = data.get('title', video_id)
+                if fmt == 'mp3':
+                    streams = [s for s in data.get('adaptiveFormats', [])
+                               if s.get('type', '').startswith('audio/')]
+                    streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
+                    idx = min({'320': 0, '192': 1, '128': 2}.get(qual, 0), max(len(streams) - 1, 0))
+                    if streams:
+                        stream_url = streams[idx].get('url')
+                else:
+                    combined = data.get('formatStreams', [])
+                    qual_int = int(qual)
+                    best = None
+                    for s in combined:
+                        h = int(s.get('resolution', '0p').replace('p', '') or 0)
+                        if h <= qual_int:
+                            if best is None or h > int(best.get('resolution', '0p').replace('p', '') or 0):
+                                best = s
+                    if not best and combined:
+                        best = combined[0]
+                    if best:
+                        stream_url = best.get('url')
+                if stream_url:
+                    print(f'[download] Invidious OK: {instance}', flush=True)
+                    break
+                errors.append(f'Invidious {instance}: no stream in response')
+            except Exception as e:
+                errors.append(f'Invidious {instance}: {e}')
+
+    if not stream_url and ENABLE_PUBLIC_PROXIES:
+        piped_list = _get_piped_instances() or PIPED_INSTANCES_FALLBACK
+        for instance in piped_list:
+            try:
+                resp = requests.get(
+                    f'{instance.rstrip("/")}/streams/{video_id}',
+                    timeout=8, headers={'User-Agent': 'Mozilla/5.0'}
                 )
                 if not resp.ok:
                     errors.append(f'Piped {instance}: HTTP {resp.status_code}')
@@ -1105,16 +1324,15 @@ def api_download():
                     errors.append(f'Piped {instance}: {data["error"]}')
                     continue
                 video_title = data.get('title', video_id)
-
                 if fmt == 'mp3':
                     streams = data.get('audioStreams', [])
                     streams.sort(key=lambda s: s.get('bitrate', 0), reverse=True)
-                    qual_idx = {'320': 0, '192': 1, '128': 2}
-                    idx = min(qual_idx.get(qual, 0), max(len(streams)-1, 0))
+                    idx = min({'320': 0, '192': 1, '128': 2}.get(qual, 0), max(len(streams) - 1, 0))
                     if streams:
                         stream_url = streams[idx].get('url')
                 else:
-                    streams = [s for s in data.get('videoStreams', []) if not s.get('videoOnly', True)]
+                    streams = [s for s in data.get('videoStreams', [])
+                               if not s.get('videoOnly', True)]
                     qual_int = int(qual)
                     best = None
                     for s in streams:
@@ -1126,28 +1344,53 @@ def api_download():
                         best = streams[0]
                     if best:
                         stream_url = best.get('url')
-
                 if stream_url:
-                    print(f'[download] Got stream from Piped: {instance}', flush=True)
+                    print(f'[download] Piped OK: {instance}', flush=True)
                     break
-                else:
-                    errors.append(f'Piped {instance}: no stream found in response')
+                errors.append(f'Piped {instance}: no stream in response')
             except Exception as e:
                 errors.append(f'Piped {instance}: {e}')
-                continue
 
     if not stream_url:
-        print(f'[download] All sources failed for {video_id}: {errors}', flush=True)
-        return jsonify({'error': 'Could not get stream URL', 'details': errors}), 502
+        print(f'[download] All sources failed for {video_id} | {fmt}/{qual}', flush=True)
+        print(f'          Errors: {errors}', flush=True)
+        return jsonify({
+            'error': 'Could not get any playable stream URL',
+            'message': 'YouTube is actively blocking most public proxies right now (March 2026). Try again in a few hours or use a different video.',
+            'hint': 'yt-dlp is having temporary issues with YouTube (March 2026). Try again soon or check https://github.com/yt-dlp/yt-dlp/issues',
+            'details': errors[-3:]
+        }), 503
 
     safe_title = ''.join(c if c.isalnum() or c in ' _-' else '_' for c in video_title)
-    ext = 'mp3' if fmt == 'mp3' else 'mp4'
+    ext  = 'webm' if fmt == 'mp3' else 'mp4'
+    mime = 'audio/webm' if fmt == 'mp3' else 'video/mp4'
     filename = f'{safe_title}.{ext}'
 
-    from flask import redirect
-    r = redirect(stream_url, code=302)
-    r.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-    return r
+    try:
+        upstream = requests.get(
+            stream_url, stream=True, timeout=30,
+            headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.youtube.com/'}
+        )
+        if not upstream.ok:
+            return jsonify({'error': f'Stream fetch failed: HTTP {upstream.status_code}'}), 502
+
+        def generate():
+            for chunk in upstream.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+
+        resp_headers = {
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Type': mime,
+        }
+        cl = upstream.headers.get('Content-Length')
+        if cl:
+            resp_headers['Content-Length'] = cl
+
+        return Response(stream_with_context(generate()), headers=resp_headers, status=200)
+
+    except Exception as e:
+        return jsonify({'error': f'Stream proxy failed: {e}'}), 502
 
 
 if __name__ == '__main__':

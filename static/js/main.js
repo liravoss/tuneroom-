@@ -13,6 +13,7 @@ var retryTimer  = null, retryCount = 0;
 var videoMode   = true;
 var lyricsOpen  = false;
 var voiceOn     = false, muted = false, localStream = null, peers = {};
+var sortableInstance = null;
 var msgN        = 0;
 
 var COLORS = ['#60a5fa','#34d399','#f472b6','#fb923c','#a78bfa','#facc15','#38bdf8','#f87171'];
@@ -321,13 +322,15 @@ function doPaste(){
   $('paste-inp').value=''; addById(id);
 }
 function addById(id){
-  var song={ id:id, title:'Loading…', channel:'YouTube', thumbnail:'https://img.youtube.com/vi/'+id+'/mqdefault.jpg' };
+  var qid = 'q'+Date.now()+Math.random().toString(36).slice(2,5);
+  var song={ id:id, title:'Loading…', channel:'YouTube', thumbnail:'https://img.youtube.com/vi/'+id+'/mqdefault.jpg', qid:qid };
   addToQueue(song);
   fetch('/api/oembed?id='+id).then(function(r){ return r.json(); }).then(function(d){
     if(!d.title) return;
-    queue.forEach(function(s){ if(s.id===id){ s.title=d.title; s.channel=d.channel||'YouTube'; }});
+    // Match by qid to correctly handle duplicate songs
+    queue.forEach(function(s){ if(s.qid===qid){ s.title=d.title; s.channel=d.channel||'YouTube'; }});
     renderQueue();
-    if(currentSong&&currentSong.id===id){ currentSong.title=d.title; currentSong.channel=d.channel||'YouTube'; updateNowPlaying(currentSong); }
+    if(currentSong&&currentSong.qid===qid){ currentSong.title=d.title; currentSong.channel=d.channel||'YouTube'; updateNowPlaying(currentSong); }
   }).catch(function(){});
 }
 
@@ -360,11 +363,14 @@ function renderQueue(){
       else { queue=queue.filter(function(s){ return s.qid!==qid; }); renderQueue(); }
     };
   });
-  if(window.Sortable){ Sortable.create(el,{ animation:130,onEnd:function(ev){
-    var item=queue.splice(ev.oldIndex,1)[0]; queue.splice(ev.newIndex,0,item);
-    if(curIdx===ev.oldIndex) curIdx=ev.newIndex; renderQueue();
-    if(socket) socket.emit('reorder_queue',{ room:ME.room,queue:queue });
-  }}); }
+  if(window.Sortable){
+    if(sortableInstance){ sortableInstance.destroy(); sortableInstance = null; }
+    sortableInstance = Sortable.create(el,{ animation:130,onEnd:function(ev){
+      var item=queue.splice(ev.oldIndex,1)[0]; queue.splice(ev.newIndex,0,item);
+      if(curIdx===ev.oldIndex) curIdx=ev.newIndex; renderQueue();
+      if(socket) socket.emit('reorder_queue',{ room:ME.room,queue:queue });
+    }});
+  }
 }
 function updateNowPlaying(s){
   $('np-title').textContent=s.title||''; $('np-channel').textContent=s.channel||'';
@@ -413,7 +419,7 @@ function applyReact(mid,emoji){
 function clearQueue(){
   if(!queue.length){ toast('Queue is empty'); return; }
   if(!confirm('Remove all '+queue.length+' songs?')) return;
-  queue=[]; curIdx=-1; currentSong=null; renderQueue();
+  queue=[]; curIdx=-1; currentSong=null; sortableInstance=null; renderQueue();
   if(ytReady&&ytPlayer) ytPlayer.stopVideo();
   $('np-title').textContent='Nothing playing yet'; $('np-channel').textContent='Add songs to get started'; $('btn-pp').textContent='▶';
   if(socket) socket.emit('reorder_queue',{ room:ME.room,queue:[] });

@@ -167,7 +167,8 @@ def favicon():
 
 @app.route('/sw.js')
 def service_worker():
-    resp = app.send_static_file('js/sw.js')
+    from flask import send_from_directory
+    resp = send_from_directory('.', 'sw.js')
     resp.headers['Cache-Control'] = 'no-cache'
     resp.headers['Content-Type']  = 'application/javascript'
     return resp
@@ -245,20 +246,21 @@ def _search_youtube_key(q, key):
 
 def _search_youtube_parallel(q, keys):
     """Try all YouTube API keys simultaneously — returns first successful result."""
-    import concurrent.futures
     if not keys:
         return None
-    # Try all keys at once, return whichever responds first with results
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(keys), 5)) as ex:
-        futures = {ex.submit(_search_youtube_key, q, k): k for k in keys}
-        for future in concurrent.futures.as_completed(futures, timeout=6):
-            try:
-                result = future.result()
-                if result:
-                    return result
-            except Exception:
-                continue
-    return None
+    import gevent.pool
+    pool = gevent.pool.Pool(size=min(len(keys), 5))
+    results_box = [None]
+    def _try(k):
+        if results_box[0]: return
+        r = _search_youtube_key(q, k)
+        if r and not results_box[0]:
+            results_box[0] = r
+    jobs = [pool.spawn(_try, k) for k in keys]
+    # Wait up to 6s for any job to succeed
+    import gevent
+    gevent.joinall(jobs, timeout=6)
+    return results_box[0]
 
 
 def _search_invidious(q):
@@ -581,7 +583,7 @@ def api_lyrics():
         r = requests.get(
             'https://api.happi.dev/v1/music',
             params={'q': f'{clean_artist} {clean_title}', 'limit': 1, 'type': 'track'},
-            headers={'x-happi-key': '', 'User-Agent': 'TuneRoom/1.0'},
+            headers={'User-Agent': 'TuneRoom/1.0'},
             timeout=7
         )
         if r.ok:
@@ -641,12 +643,21 @@ def api_oembed():
 @app.route('/api/playlist')
 def api_playlist():
     url    = request.args.get('url', '').strip()
-    yt_key = os.environ.get('YOUTUBE_API_KEY', '')
+
+    # Collect all available YouTube keys (same rotation as search)
+    yt_keys = []
+    base = os.environ.get('YOUTUBE_API_KEY', '').strip()
+    if base: yt_keys.append(base)
+    for i in range(2, 31):
+        k = os.environ.get(f'YOUTUBE_API_KEY_{i}', '').strip()
+        if k: yt_keys.append(k)
 
     if not url:
         return jsonify({'error': 'No URL provided'}), 400
-    if not yt_key:
-        return jsonify({'error': 'YOUTUBE_API_KEY not set'}), 400
+    if not yt_keys:
+        return jsonify({'error': 'No YOUTUBE_API_KEY set'}), 400
+
+    yt_key = yt_keys[0]  # start with primary; rotate on quota error below
 
     # Extract playlist ID from any YouTube playlist URL format
     import re as _re
@@ -678,6 +689,12 @@ def api_playlist():
             data = r.json()
 
             if 'error' in data:
+                code = data['error'].get('code', 0)
+                # Rotate to next key on quota error
+                if code in (403, 429) and len(yt_keys) > 1:
+                    yt_keys.pop(0)
+                    yt_key = yt_keys[0]
+                    continue
                 return jsonify({'error': data['error']['message']}), 400
 
             for item in data.get('items', []):
@@ -722,6 +739,25 @@ def api_playlist():
 
 
 # ─────────────────────────────────────────────────────────────
+#  SANITIZE HELPERS  — used by Socket.IO handlers below
+# ─────────────────────────────────────────────────────────────
+def sanitize_color(c):
+    """Allow only valid hex colors — prevents CSS injection via color field."""
+    import re
+    c = str(c or '#60a5fa').strip()
+    if re.match(r'^#[0-9a-fA-F]{3,6}$', c):
+        return c
+    return '#60a5fa'  # default ice blue
+
+def sanitize_text(t, maxlen=500):
+    """Strip HTML tags and limit length — prevents XSS via chat text."""
+    import re
+    t = str(t or '').strip()
+    t = re.sub(r'<[^>]*>', '', t)   # strip all HTML tags
+    t = t[:maxlen]                   # limit length
+    return t
+
+# ─────────────────────────────────────────────────────────────
 #  SOCKET.IO  — real-time room sync
 # ─────────────────────────────────────────────────────────────
 @socketio.on('join')
@@ -738,7 +774,7 @@ def on_join(data):
     # Broadcasting room_state caused song restarts for everyone already in the room
     emit('room_state', {
         'queue':         queue,
-        'chat_history':  r['chat_history'][-20:],
+        'chat_history':  r['chat_history'][-50:],
         'users':         list(r['users'].values()),
         'current_index': state['current_index'],
         'is_playing':    state['is_playing'],
@@ -753,7 +789,7 @@ def on_join(data):
 
 @socketio.on('disconnect')
 def on_disconnect():
-    for rid, r in rooms.items():
+    for rid, r in list(rooms.items()):
         if request.sid in r['users']:
             user = r['users'].pop(request.sid)
             r['voice_peers'].pop(request.sid, None)
@@ -854,22 +890,6 @@ def on_sync(data):
     }, to=rid, include_self=False)
 
 
-def sanitize_color(c):
-    """Allow only valid hex colors — prevents CSS injection via color field."""
-    import re
-    c = str(c or '#60a5fa').strip()
-    if re.match(r'^#[0-9a-fA-F]{3,6}$', c):
-        return c
-    return '#60a5fa'  # default ice blue
-
-def sanitize_text(t, maxlen=500):
-    """Strip HTML tags and limit length — prevents XSS via chat text."""
-    import re
-    t = str(t or '').strip()
-    t = re.sub(r'<[^>]*>', '', t)   # strip all HTML tags
-    t = t[:maxlen]                   # limit length
-    return t
-
 @socketio.on('chat_msg')
 def on_chat(data):
     rid  = sanitize_room_id(data.get('room', 'main'))
@@ -947,7 +967,7 @@ def on_voice_signal(data):
     target = data.get('target')
     r      = get_room(rid)
     # Only forward to targets that are actually in the same room
-    if target and target in r['users']:
+    if target and (target in r['users'] or target in r.get('voice_peers', {})):
         emit('voice_signal', {'from': request.sid, 'signal': data.get('signal')},
              to=target)
 

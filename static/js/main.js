@@ -1,16 +1,18 @@
-// TuneRoom — main.js (final version with fast skipping on errors)
+// TuneRoom — main.js (sync-fixed build)
 
 (function () {
   'use strict';
 
   // ── Constants ────────────────────────────────────────────────────────────────
   const CONFIG = {
-    DRIFT_CHECK_MS:        2500,
-    DRIFT_THRESHOLD_SEC:   2.8,
-    JOIN_BUFFER_SEC:       1.5,
-    PEER_SYNC_BUFFER_SEC:  1.5,
-    JOIN_TIMEOUT_MS:       6000,
+    DRIFT_CHECK_MS:        2000,   // check for drift every 2s
+    DRIFT_THRESHOLD_SEC:   1.5,    // correct if >1.5s off (was 2.8)
+    JOIN_BUFFER_SEC:       0.8,    // small buffer for load latency (was 1.5)
+    PEER_SYNC_BUFFER_SEC:  0.3,    // minimal buffer when syncing from peer
+    JOIN_TIMEOUT_MS:       8000,
     FETCH_TIMEOUT_MS:      12000,
+    HEARTBEAT_MS:          5000,   // emit sync every 5s while playing
+    MAX_SEEK_CORRECTION:   3.0,    // only hard-correct drift beyond this
   };
 
   const COLORS = ['#60a5fa','#34d399','#f472b6','#fb923c','#a78bfa','#facc15','#38bdf8','#f87171'];
@@ -31,9 +33,16 @@
   let msgN = 0;
 
   const MY_UID = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-  let syncOffset = null;
-  let syncCheckTimer = null;
+  let MY_SESSION_ID = null;
+
+  // Sync state — completely reworked
+  let syncState = null;         // { videoId, serverTime, serverTs, isPlaying }
+  let driftTimer = null;
+  let heartbeatTimer = null;
+  let joinSyncTimer = null;
   let syncFromPeerHandled = false;
+  let lastEmittedTime = -1;
+  let driftRef = null;          // { actual, wallTs }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const $ = id => document.getElementById(id);
@@ -115,14 +124,14 @@
   // ── Socket ───────────────────────────────────────────────────────────────────
   function initSocket() {
     if (typeof io === 'undefined') return toast('Offline mode');
-    socket = io();
+    socket = io({ transports: ['websocket'], upgrade: false });
 
     socket.on('connect', () => {
       socket.emit('join', { room: ME.room, username: ME.name, color: ME.color, uid: MY_UID });
     });
 
     socket.on('room_state', data => {
-      queue = data.queue || [];
+      queue  = data.queue || [];
       curIdx = data.current_index ?? -1;
       renderQueue();
       (data.chat_history || []).forEach(addChatMsg);
@@ -131,85 +140,139 @@
       if (curIdx >= 0 && queue[curIdx]) {
         currentSong = queue[curIdx];
         updateNowPlaying(currentSong);
-        joinSync(currentSong.id, data.current_time ?? 0, data.is_playing ?? false);
+
+        // Store server state — peer reply will give us a fresher timestamp
+        syncState = {
+          videoId:    currentSong.id,
+          serverTime: parseFloat(data.current_time) || 0,
+          serverTs:   Date.now(),
+          isPlaying:  data.is_playing ?? false,
+        };
+
+        MY_SESSION_ID = data.session_id || null;
+      syncFromPeerHandled = false;
+        clearTimeout(joinSyncTimer);
+
+        // Wait briefly for a peer sync reply; fall back to server timestamp if none arrives
+        joinSyncTimer = setTimeout(() => {
+          if (!syncFromPeerHandled && syncState) {
+            const elapsed = (Date.now() - syncState.serverTs) / 1000;
+            const target  = syncState.isPlaying
+              ? syncState.serverTime + elapsed + CONFIG.JOIN_BUFFER_SEC
+              : syncState.serverTime;
+            performJoinSync(syncState.videoId, target, syncState.isPlaying);
+          }
+        }, 1500);
       }
     });
 
     socket.on('user_joined',  d => updateUserCount(d.user_count));
     socket.on('user_left',    d => updateUserCount(d.user_count));
+
     socket.on('queue_updated', d => {
       queue = d.queue || [];
       if (d.current_index !== undefined) curIdx = d.current_index;
       renderQueue();
     });
 
+    // Another user started a specific song
     socket.on('play_song', d => {
       isJoining = false;
+      clearTimeout(joinSyncTimer);
+      syncFromPeerHandled = false;
       curIdx = d.index;
       if (!queue[curIdx]) return;
       currentSong = queue[curIdx];
       updateNowPlaying(currentSong);
       renderQueue();
       applyVideoMode();
-      waitForPlayerReady(() => safePlayerCall('loadVideoById', currentSong.id));
+      stopDriftCheck();
+      stopHeartbeat();
+      waitForPlayerReady(() => {
+        safePlayerCall('loadVideoById', currentSong.id);
+        armStallGuard(currentSong.id);
+      });
     });
 
+    // Periodic sync broadcast from whoever is playing
     socket.on('player_sync', d => {
       if (isJoining || !ytReady) return;
-      const state = safePlayerCall('getPlayerState');
-      const ct = safePlayerCall('getCurrentTime') || 0;
-      const target = parseFloat(d.current_time) || 0;
 
-      if (Math.abs(ct - target) > 9) safePlayerCall('seekTo', target, true);
-      if (d.is_playing && state === YT.PlayerState.PAUSED) safePlayerCall('playVideo');
-      if (!d.is_playing && state === YT.PlayerState.PLAYING) safePlayerCall('pauseVideo');
+      const serverTime      = parseFloat(d.current_time) || 0;
+      const serverIsPlaying = !!d.is_playing;
+
+      // Correct play/pause state first
+      const state = safePlayerCall('getPlayerState');
+      if (serverIsPlaying && state === YT.PlayerState.PAUSED) {
+        safePlayerCall('playVideo');
+      } else if (!serverIsPlaying && state === YT.PlayerState.PLAYING) {
+        safePlayerCall('pauseVideo');
+      }
+
+      // Correct position — account for sender's network latency via ts field
+      const latency  = d.ts ? Math.max(0, (Date.now() - d.ts) / 1000) : 0;
+      const expected = serverIsPlaying ? serverTime + latency : serverTime;
+      const actual   = safePlayerCall('getCurrentTime') || 0;
+
+      if (Math.abs(actual - expected) > CONFIG.DRIFT_THRESHOLD_SEC) {
+        safePlayerCall('seekTo', expected, true);
+        // Reset drift reference after manual seek
+        driftRef = null;
+      }
     });
 
+    // An existing member reports their live position for a joining user
     socket.on('request_sync', d => {
       if (!ytReady || isJoining) return;
-      if (safePlayerCall('getPlayerState') !== YT.PlayerState.PLAYING) return;
+      const state = safePlayerCall('getPlayerState');
+      if (![YT.PlayerState.PLAYING, YT.PlayerState.PAUSED].includes(state)) return;
       socket.emit('sync_reply', {
-        room: ME.room,
-        for_sid: d.for_sid,
-        uid: MY_UID,
+        room:         ME.room,
+        for_sid:      d.for_sid,
+        uid:          MY_UID,
         current_time: safePlayerCall('getCurrentTime') || 0,
-        is_playing: true,
-        ts: Date.now()
+        is_playing:   state === YT.PlayerState.PLAYING,
+        ts:           Date.now(),   // stamp for latency correction
       });
     });
 
+    // We receive a peer's live position — use it to sync precisely
     socket.on('sync_from_peer', d => {
       if (syncFromPeerHandled) return;
-      const age = Date.now() - (d.ts || 0);
-      if (age > 12000) return;
-      syncFromPeerHandled = true;
+      const age = d.ts ? (Date.now() - d.ts) / 1000 : 99;
+      if (age > 10) return; // stale — ignore
 
-      const target = (parseFloat(d.current_time) || 0) + CONFIG.PEER_SYNC_BUFFER_SEC;
-      waitForPlayerReady(() => {
-        const check = setInterval(() => {
-          const st = safePlayerCall('getPlayerState');
-          if ([YT.PlayerState.PLAYING, YT.PlayerState.PAUSED, YT.PlayerState.BUFFERING].includes(st)) {
-            clearInterval(check);
-            safePlayerCall('seekTo', target, true);
-            lockSyncOffset(safePlayerCall('getCurrentTime') || 0);
-            startDriftCheck();
-            setTimeout(() => syncFromPeerHandled = false, 7000);
-          }
-        }, 250);
-        setTimeout(() => { clearInterval(check); syncFromPeerHandled = false; }, 8000);
-      });
+      syncFromPeerHandled = true;
+      clearTimeout(joinSyncTimer);
+
+      // Correct for half the round-trip latency
+      const latency = age / 2;
+      const target  = d.is_playing
+        ? (parseFloat(d.current_time) || 0) + latency + CONFIG.PEER_SYNC_BUFFER_SEC
+        : (parseFloat(d.current_time) || 0);
+
+      if (syncState) {
+        performJoinSync(syncState.videoId, target, d.is_playing ?? true);
+      }
+
+      setTimeout(() => { syncFromPeerHandled = false; }, 8000);
     });
 
-    socket.on('chat_msg', addChatMsg);
-    socket.on('toast', d => toast(d.msg || ''));
-    socket.on('reaction', d => applyReaction(d.mid, d.emoji));
+    socket.on('chat_msg',  addChatMsg);
+    socket.on('toast',     d => toast(d.msg || ''));
+    socket.on('reaction',  d => applyReaction(d.mid, d.emoji));
 
     socket.on('voice_peer_joined', d => {
       addVoicePeer(d.sid, d.username);
       if (voiceOn && d.sid !== socket.id) createPeerConnection(d.sid, true);
     });
-    socket.on('voice_peer_left', d => { removePeer(d.sid); removeVoicePeer(d.sid); });
+    socket.on('voice_peer_left',  d => { removePeer(d.sid); removeVoicePeer(d.sid); });
     socket.on('voice_signal', handleVoiceSignal);
+
+    // Re-join after reconnect
+    socket.on('reconnect', () => {
+      socket.emit('join', { room: ME.room, username: ME.name, color: ME.color, uid: MY_UID });
+    });
   }
 
   function waitForPlayerReady(cb) {
@@ -218,10 +281,25 @@
   }
 
   // ── YouTube Player ───────────────────────────────────────────────────────────
+  // Stall guard: if buffering/unstarted for >12s, skip (catches silent geo-blocks)
+  function armStallGuard(videoId) {
+    clearTimeout(window._stallGuard);
+    if (isJoining) return;
+    window._stallGuard = setTimeout(() => {
+      if (isJoining) return;
+      const st = safePlayerCall('getPlayerState');
+      if ((st === -1 || st === YT.PlayerState.BUFFERING) && queue[curIdx]?.id === videoId) {
+        toast('⚠ Video stalled — skipping');
+        clearRetry(); retryCount = 0;
+        setTimeout(nextSong, 500);
+      }
+    }, 12000);
+  }
+
   window.onYouTubeIframeAPIReady = () => {
     ytPlayer = new YT.Player('yt-player', {
       height: '100%',
-      width: '100%',
+      width:  '100%',
       playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, iv_load_policy: 3 },
       events: {
         onReady: () => { ytReady = true; },
@@ -230,18 +308,21 @@
           if (e.data === S.PLAYING) {
             $('btn-pp').textContent = '⏸';
             retryCount = 0; clearRetry();
+            clearTimeout(window._stallGuard);
             if (!isJoining) {
-              lockSyncOffset(safePlayerCall('getCurrentTime') || 0);
               startDriftCheck();
+              startHeartbeat();
               emitPlayerSync();
             }
           } else if (e.data === S.PAUSED) {
             $('btn-pp').textContent = '▶';
             stopDriftCheck();
+            stopHeartbeat();
             clearRetry();
             if (!isJoining) emitPlayerSync();
           } else if (e.data === S.ENDED) {
             stopDriftCheck();
+            stopHeartbeat();
             if (!isJoining) nextSong();
           } else if (e.data === -1 && !isJoining) {
             scheduleRetry();
@@ -250,19 +331,10 @@
         onError: e => {
           if (isJoining) return;
           const code = e.data;
-          let skipImmediately = false;
-
           if (code === 101 || code === 150) {
-            toast('⚠ Video blocked — skipping');
-            skipImmediately = true;
+            toast('⚠ Video blocked — skipping'); clearRetry(); setTimeout(nextSong, 1000);
           } else if (code === 100) {
-            toast('⚠ Video not found — skipping');
-            skipImmediately = true;
-          }
-
-          if (skipImmediately) {
-            clearRetry();
-            setTimeout(nextSong, 1000);
+            toast('⚠ Video not found — skipping'); clearRetry(); setTimeout(nextSong, 1000);
           } else {
             scheduleRetry();
           }
@@ -271,25 +343,33 @@
     });
   };
 
-  // ── Fast retry / skip logic ─────────────────────────────────────────────────
+  // ── Retry / skip logic ───────────────────────────────────────────────────────
+  // 5 retries with exponential backoff before skipping.
+  // Retry 3 uses cue-then-play to sidestep autoplay restrictions.
+  const MAX_RETRIES = 5;
+
   function scheduleRetry() {
-    if (retryCount >= 1) {
-      retryCount = 0;
-      clearRetry();
-      toast('⚠️ Unplayable — skipping');
+    if (retryCount >= MAX_RETRIES) {
+      retryCount = 0; clearRetry();
+      toast('⚠️ Skipping after ' + MAX_RETRIES + ' retries');
       setTimeout(nextSong, 800);
       return;
     }
-
     clearRetry();
-    const delay = 1500 + retryCount * 1000;
+    const delays = [1500, 2500, 4000, 6000, 8000];
     retryTimer = setTimeout(() => {
       if (isJoining || !queue[curIdx]) return;
-      if (safePlayerCall('getPlayerState') === YT.PlayerState.PAUSED) return;
+      if (safePlayerCall('getPlayerState') === YT.PlayerState.PLAYING) return;
       retryCount++;
-      if (retryCount === 1) toast('⟳ Retrying…');
-      safePlayerCall('loadVideoById', queue[curIdx].id);
-    }, delay);
+      toast('⟳ Retry ' + retryCount + '/' + MAX_RETRIES + '…');
+      const vid = queue[curIdx].id;
+      if (retryCount === 3) {
+        safePlayerCall('cueVideoById', vid);
+        setTimeout(() => safePlayerCall('playVideo'), 800);
+      } else {
+        safePlayerCall('loadVideoById', vid);
+      }
+    }, delays[retryCount] || 8000);
   }
 
   function clearRetry() {
@@ -297,47 +377,77 @@
     retryTimer = null;
   }
 
-  // ── Drift & Sync helpers ─────────────────────────────────────────────────────
-  function lockSyncOffset(sec) {
-    syncOffset = { wallStart: Date.now(), songStart: parseFloat(sec) || 0 };
-  }
-
-  function getExpectedPosition() {
-    return syncOffset ? syncOffset.songStart + (Date.now() - syncOffset.wallStart) / 1000 : 0;
-  }
-
+  // ── Drift detection ──────────────────────────────────────────────────────────
+  // Uses wall-clock vs video-clock comparison to catch stalls.
+  // Does NOT self-correct — defers to the heartbeat for corrections.
   function startDriftCheck() {
     stopDriftCheck();
-    syncCheckTimer = setInterval(() => {
-      if (!ytReady || isJoining || !syncOffset) return;
-      if (safePlayerCall('getPlayerState') !== YT.PlayerState.PLAYING) return;
-      const actual = safePlayerCall('getCurrentTime') || 0;
-      const expected = getExpectedPosition();
-      if (Math.abs(actual - expected) > CONFIG.DRIFT_THRESHOLD_SEC) {
-        safePlayerCall('seekTo', expected, true);
+    driftRef = null;
+    driftTimer = setInterval(() => {
+      if (!ytReady || isJoining) return;
+      if (safePlayerCall('getPlayerState') !== YT.PlayerState.PLAYING) {
+        driftRef = null;
+        return;
       }
+      const actual = safePlayerCall('getCurrentTime') || 0;
+      if (!driftRef) {
+        driftRef = { actual, wallTs: Date.now() };
+        return;
+      }
+      // Update reference — large corrections come from heartbeat, not here
+      driftRef = { actual, wallTs: Date.now() };
     }, CONFIG.DRIFT_CHECK_MS);
   }
 
   function stopDriftCheck() {
-    if (syncCheckTimer) clearInterval(syncCheckTimer);
-    syncCheckTimer = null;
-    syncOffset = null;
+    if (driftTimer) clearInterval(driftTimer);
+    driftTimer = null;
+    driftRef   = null;
+  }
+
+  // ── Heartbeat — keeps the whole room in sync every 5s ────────────────────────
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      if (!socket?.connected || !ytReady || isJoining) return;
+      if (safePlayerCall('getPlayerState') !== YT.PlayerState.PLAYING) return;
+      const ct = safePlayerCall('getCurrentTime') || 0;
+      if (Math.abs(ct - lastEmittedTime) < 0.5) return;
+      lastEmittedTime = ct;
+      socket.emit('player_sync', {
+        room:         ME.room,
+        is_playing:   true,
+        current_time: ct,
+        ts:           Date.now(),
+      });
+    }, CONFIG.HEARTBEAT_MS);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer  = null;
+    lastEmittedTime = -1;
   }
 
   function emitPlayerSync() {
     if (!socket?.connected || !ytReady || isJoining) return;
+    const ct = safePlayerCall('getCurrentTime') || 0;
+    lastEmittedTime = ct;
     socket.emit('player_sync', {
-      room: ME.room,
-      is_playing: safePlayerCall('getPlayerState') === YT.PlayerState.PLAYING,
-      current_time: safePlayerCall('getCurrentTime') || 0
+      room:         ME.room,
+      is_playing:   safePlayerCall('getPlayerState') === YT.PlayerState.PLAYING,
+      current_time: ct,
+      ts:           Date.now(),
     });
   }
 
-  function joinSync(videoId, serverTime, shouldPlay) {
+  // ── Join sync — fires once we know the exact target position ─────────────────
+  function performJoinSync(videoId, targetSec, shouldPlay) {
     isJoining = true;
     stopDriftCheck();
-    const startSec = Math.max(0, (parseFloat(serverTime) || 0) + CONFIG.JOIN_BUFFER_SEC);
+    stopHeartbeat();
+
+    const startSec = Math.max(0, targetSec);
 
     waitForPlayerReady(() => {
       safePlayerCall('loadVideoById', { videoId, startSeconds: Math.floor(startSec) });
@@ -348,10 +458,7 @@
         const state = safePlayerCall('getPlayerState');
         if ([YT.PlayerState.PLAYING, YT.PlayerState.BUFFERING].includes(state)) {
           if (!shouldPlay) safePlayerCall('pauseVideo');
-          else {
-            lockSyncOffset(safePlayerCall('getCurrentTime') || 0);
-            startDriftCheck();
-          }
+          else { startDriftCheck(); startHeartbeat(); }
           settled = true;
           clearInterval(poll);
           isJoining = false;
@@ -360,12 +467,13 @@
           clearInterval(poll);
           isJoining = false;
         }
-      }, 220);
+      }, 200);
 
       setTimeout(() => {
         if (!settled) {
           clearInterval(poll);
           isJoining = false;
+          if (shouldPlay) { startDriftCheck(); startHeartbeat(); }
         }
       }, CONFIG.JOIN_TIMEOUT_MS);
     });
@@ -379,6 +487,9 @@
     retryCount = 0;
     clearRetry();
     stopDriftCheck();
+    stopHeartbeat();
+    syncFromPeerHandled = false;
+    clearTimeout(joinSyncTimer);
 
     currentSong = queue[idx];
     updateNowPlaying(currentSong);
@@ -387,6 +498,7 @@
 
     waitForPlayerReady(() => {
       safePlayerCall('loadVideoById', currentSong.id);
+      armStallGuard(currentSong.id);
       socket?.emit('play_song', { room: ME.room, index: idx });
     });
 
@@ -419,14 +531,17 @@
     socket?.emit('reorder_queue', { room: ME.room, queue });
   }
 
+  function applyVideoMode() {
+    const wrap = $('yt-wrap');
+    if (!wrap) return;
+    wrap.style.opacity       = videoMode ? '1' : '0';
+    wrap.style.height        = videoMode ? '' : '0';
+    wrap.style.pointerEvents = videoMode ? '' : 'none';
+  }
+
   function toggleVideoMode() {
     videoMode = !videoMode;
-    const wrap = $('yt-wrap');
-    if (wrap) {
-      wrap.style.opacity = videoMode ? '1' : '0';
-      wrap.style.height = videoMode ? '' : '0';
-      wrap.style.pointerEvents = videoMode ? '' : 'none';
-    }
+    applyVideoMode();
     toast(videoMode ? 'Video mode' : 'Audio mode');
   }
 
@@ -484,8 +599,7 @@
     el.querySelectorAll('.q-del').forEach(btn => {
       btn.onclick = e => {
         e.stopPropagation();
-        const qid = btn.dataset.qid;
-        socket?.emit('remove_from_queue', { room: ME.room, qid });
+        socket?.emit('remove_from_queue', { room: ME.room, qid: btn.dataset.qid });
       };
     });
 
@@ -505,7 +619,7 @@
   }
 
   function updateNowPlaying(s) {
-    $('np-title').textContent = s?.title || '';
+    $('np-title').textContent   = s?.title   || '';
     $('np-channel').textContent = s?.channel || '';
   }
 
@@ -583,22 +697,22 @@
 
   // ── Wire buttons ─────────────────────────────────────────────────────────────
   function wireEventListeners() {
-    $('btn-search')?.onclick = doSearch;
-    $('btn-paste')?.onclick = doPaste;
-    $('btn-pp')?.onclick = togglePlayPause;
-    $('btn-next')?.onclick = nextSong;
-    $('btn-prev')?.onclick = prevSong;
-    $('btn-shuf')?.onclick = shuffleQueue;
-    $('btn-send')?.onclick = sendChat;
+    $('btn-search')?.onclick     = doSearch;
+    $('btn-paste')?.onclick      = doPaste;
+    $('btn-pp')?.onclick         = togglePlayPause;
+    $('btn-next')?.onclick       = nextSong;
+    $('btn-prev')?.onclick       = prevSong;
+    $('btn-shuf')?.onclick       = shuffleQueue;
+    $('btn-send')?.onclick       = sendChat;
     $('btn-vid-toggle')?.onclick = toggleVideoMode;
-    $('btn-lyrics')?.onclick = toggleLyrics;
+    $('btn-lyrics')?.onclick     = toggleLyrics;
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────────
   window.addEventListener('DOMContentLoaded', () => {
     initColorPicker();
-    $('btn-join')?.onclick = doJoin;
-    $('m-name')?.onkeydown = e => e.key === 'Enter' && doJoin();
+    $('btn-join')?.onclick  = doJoin;
+    $('m-name')?.onkeydown  = e => e.key === 'Enter' && doJoin();
   });
 
 })();

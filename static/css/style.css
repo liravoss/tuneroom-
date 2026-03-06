@@ -637,3 +637,210 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   .landing-wrap, .join-card, .logo-hero,
   .modal-exit, #app.app-enter { animation: none !important; transition: none !important; }
 }
+/* ════════════════════════════════════════
+   SHARE BUTTON + MODAL
+   ════════════════════════════════════════ */
+
+/* ── Header share button ── */
+#btn-share {
+  display: flex; align-items: center; gap: 5px;
+  background: rgba(96,165,250,0.1);
+  border: 1px solid rgba(96,165,250,0.28);
+  color: var(--ice2);
+  border-radius: 8px; padding: 5px 11px;
+  font-family: 'Outfit', sans-serif; font-size: .74rem; font-weight: 500;
+  cursor: pointer; transition: all .2s; flex-shrink: 0;
+}
+#btn-share:hover {
+  background: rgba(96,165,250,0.2);
+  border-color: var(--ice1);
+  box-shadow: 0 0 14px rgba(96,165,250,0.2);
+}
+#btn-share svg { flex-shrink: 0; }
+
+/* ── Modal backdrop ── */
+#share-modal {
+  display: none;
+  position: fixed; inset: 0; z-index: 9990;
+  background: rgba(4,7,26,0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  align-items: center; justify-content: center;
+  padding: 20px;
+  animation: shareBackdropIn .25s ease;
+}
+#share-modal.open { display: flex; }
+@keyframes shareBackdropIn {
+  from { opacity: 0; } to { opacity: 1; }
+}
+
+/* ── Ice glass card ── */
+#share-card {
+  position: relative;
+  background: rgba(180,220,255,0.06);
+  border: 1px solid rgba(147,197,253,0.35);
+  border-top: 1px solid rgba(255,255,255,0.22);
+  border-left: 1px solid rgba(255,255,255,0.16);
+  border-radius: 22px;
+  padding: 24px 22px 20px;
+  width: 100%; max-width: 420px;
+  backdrop-filter: blur(48px) saturate(1.6);
+  -webkit-backdrop-filter: blur(48px) saturate(1.6);
+  box-shadow:
+    0 0 0 1px rgba(96,165,250,0.07) inset,
+    0 8px 40px rgba(0,0,0,0.5),
+    0 0 80px rgba(96,165,250,0.1),
+    0 0 120px rgba(56,189,248,0.05);
+  animation: shareCardIn .3s cubic-bezier(0.22,1,0.36,1);
+  overflow: hidden;
+}
+/* frost shimmer top edge */
+#share-card-shine {
+  position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), rgba(147,197,253,0.65), rgba(255,255,255,0.4), transparent);
+}
+@keyframes shareCardIn {
+  from { opacity: 0; transform: translateY(18px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Card header ── */
+#share-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  margin-bottom: 18px;
+}
+#share-room-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: 'Space Mono', monospace;
+  font-size: .95rem; font-weight: 700;
+  color: var(--ice2);
+  text-shadow: 0 0 18px rgba(96,165,250,0.6);
+  letter-spacing: 1px;
+}
+#share-subtitle {
+  font-size: .72rem; color: var(--dim);
+  margin-top: 3px; letter-spacing: .5px;
+}
+#share-close {
+  background: rgba(96,165,250,0.08);
+  border: 1px solid rgba(96,165,250,0.18);
+  color: var(--dim); font-size: .9rem;
+  cursor: pointer; padding: 3px 8px;
+  border-radius: 7px; transition: all .2s;
+  line-height: 1;
+}
+#share-close:hover { color: var(--text); border-color: var(--ice1); }
+
+/* ── Link box ── */
+#share-link-box {
+  background: rgba(4,10,35,0.5);
+  border: 1px solid rgba(96,165,250,0.2);
+  border-radius: 12px; padding: 11px 13px;
+  margin-bottom: 18px;
+}
+#share-link-label {
+  font-size: .6rem; letter-spacing: 1.8px;
+  text-transform: uppercase; color: rgba(147,197,253,0.55);
+  margin-bottom: 5px;
+}
+#share-link-row {
+  display: flex; align-items: center; gap: 8px;
+}
+#share-link-text {
+  flex: 1; font-family: 'Space Mono', monospace;
+  font-size: .72rem; color: var(--ice2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  letter-spacing: .3px;
+}
+#share-copy-btn {
+  display: flex; align-items: center; gap: 5px;
+  background: rgba(96,165,250,0.14);
+  border: 1px solid rgba(96,165,250,0.3);
+  color: var(--ice2); border-radius: 7px;
+  padding: 5px 11px; font-family: 'Outfit', sans-serif;
+  font-size: .72rem; font-weight: 600;
+  cursor: pointer; flex-shrink: 0; transition: all .2s;
+}
+#share-copy-btn:hover { background: rgba(96,165,250,0.26); border-color: var(--ice1); }
+#share-copy-btn.copied {
+  background: rgba(52,211,153,0.14);
+  border-color: rgba(52,211,153,0.3);
+  color: var(--grn);
+}
+
+/* ── Apps grid ── */
+#share-apps-label {
+  font-size: .6rem; letter-spacing: 1.8px;
+  text-transform: uppercase; color: rgba(147,197,253,0.5);
+  margin-bottom: 10px;
+}
+#share-apps {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 8px; margin-bottom: 16px;
+}
+.share-app {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 5px;
+  background: rgba(8,15,45,0.55);
+  border: 1px solid rgba(96,165,250,0.14);
+  border-radius: 12px; padding: 10px 6px;
+  cursor: pointer; transition: all .2s;
+  color: rgba(221,240,254,0.65);
+  font-family: 'Outfit', sans-serif;
+  font-size: .65rem; font-weight: 500;
+}
+.share-app svg { width: 20px; height: 20px; flex-shrink: 0; }
+.share-app:hover {
+  background: rgba(96,165,250,0.1);
+  border-color: rgba(96,165,250,0.32);
+  color: var(--ice2);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(96,165,250,0.12);
+}
+/* per-app accent colors */
+.share-app[data-app="whatsapp"]:hover  { border-color: rgba(37,211,102,0.4); color:#25d366; box-shadow:0 4px 16px rgba(37,211,102,0.1); }
+.share-app[data-app="telegram"]:hover  { border-color: rgba(0,136,204,0.4);  color:#0088cc; box-shadow:0 4px 16px rgba(0,136,204,0.1); }
+.share-app[data-app="twitter"]:hover   { border-color: rgba(221,240,254,0.4); color:var(--text); }
+.share-app[data-app="facebook"]:hover  { border-color: rgba(59,89,152,0.5);  color:#3b5998; box-shadow:0 4px 16px rgba(59,89,152,0.1); }
+.share-app[data-app="instagram"]:hover { border-color: rgba(225,48,108,0.4); color:#e1306c; box-shadow:0 4px 16px rgba(225,48,108,0.1); }
+.share-app[data-app="email"]:hover     { border-color: rgba(96,165,250,0.4); color:var(--ice1); }
+.share-app[data-app="native"]:hover    { border-color: rgba(167,139,250,0.4);color:#a78bfa; }
+
+/* ── Room ID footer strip ── */
+#share-room-id-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(4,10,35,0.4);
+  border: 1px solid rgba(96,165,250,0.12);
+  border-radius: 9px;
+}
+#share-room-id-label {
+  font-size: .6rem; letter-spacing: 1.5px;
+  text-transform: uppercase; color: var(--dim);
+}
+#share-room-id-val {
+  font-family: 'Space Mono', monospace;
+  font-size: .74rem; color: var(--acc);
+  letter-spacing: 1px;
+  text-shadow: 0 0 10px rgba(56,189,248,0.4);
+}
+
+/* ── Mobile adjustments ── */
+@media (max-width: 768px) {
+  #share-modal { padding: 16px; align-items: flex-end; }
+  #share-card {
+    max-width: 100%;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    padding-bottom: 30px;
+    animation: shareCardSlideUp .3s cubic-bezier(0.22,1,0.36,1);
+  }
+  @keyframes shareCardSlideUp {
+    from { opacity: 0; transform: translateY(100%); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  #share-apps { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .share-app { padding: 9px 4px; font-size: .62rem; border-radius: 10px; }
+  .share-app svg { width: 18px; height: 18px; }
+  #share-link-text { font-size: .66rem; }
+}

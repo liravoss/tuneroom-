@@ -554,3 +554,122 @@ document.addEventListener('visibilitychange',function(){
 
 window.addEventListener('load',function(){ initAudioContext(); initMobileTabs(); });
 window.addEventListener('resize',function(){ if(isMobile()){ var a=document.querySelector('.mob-tab.active'); if(!a) switchMobTab('player'); } });
+
+// ── Share Modal ───────────────────────────────────────────────
+(function(){
+  function getRoomId(){
+    // Extract from URL path /room/<id>
+    var m = window.location.pathname.match(/\/room\/([^/?#]+)/);
+    return m ? decodeURIComponent(m[1]) : 'main';
+  }
+
+  function getRoomUrl(){
+    var rid = getRoomId();
+    // Build a cool-looking link: origin/room/<id>
+    return window.location.origin + '/room/' + encodeURIComponent(rid);
+  }
+
+  function openShareModal(){
+    var rid  = getRoomId();
+    var url  = getRoomUrl();
+    var modal = document.getElementById('share-modal');
+    document.getElementById('share-room-name').textContent = rid;
+    document.getElementById('share-link-text').textContent = url;
+    document.getElementById('share-room-id-val').textContent = rid;
+    modal.classList.add('open');
+    // Reset copy button
+    var cb = document.getElementById('share-copy-btn');
+    cb.classList.remove('copied');
+    cb.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+  }
+
+  function closeShareModal(){
+    document.getElementById('share-modal').classList.remove('open');
+  }
+
+  function copyLink(){
+    var url = getRoomUrl();
+    var btn = document.getElementById('share-copy-btn');
+    navigator.clipboard.writeText(url).then(function(){
+      btn.classList.add('copied');
+      btn.innerHTML = '✓ Copied!';
+      setTimeout(function(){
+        btn.classList.remove('copied');
+        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+      }, 2200);
+    }).catch(function(){
+      // fallback for older browsers
+      var t = document.createElement('textarea');
+      t.value = url; document.body.appendChild(t);
+      t.select(); document.execCommand('copy');
+      document.body.removeChild(t);
+      btn.classList.add('copied'); btn.innerHTML = '✓ Copied!';
+      setTimeout(function(){ btn.classList.remove('copied'); btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy'; }, 2200);
+    });
+  }
+
+  function shareVia(app){
+    var url  = getRoomUrl();
+    var rid  = getRoomId();
+    var text = '❄ Join me in TuneRoom — ' + rid + '! Listen together live 🎵';
+    var href = null;
+    switch(app){
+      case 'whatsapp':
+        href = 'https://wa.me/?text=' + encodeURIComponent(text + '\n' + url);
+        break;
+      case 'telegram':
+        href = 'https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text);
+        break;
+      case 'twitter':
+        href = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(text) + '&url=' + encodeURIComponent(url);
+        break;
+      case 'facebook':
+        href = 'https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(url);
+        break;
+      case 'instagram':
+        // Instagram has no web share URL — copy link and guide user
+        copyLink();
+        if(typeof toast === 'function') toast('Link copied — paste it in Instagram!');
+        return;
+      case 'email':
+        href = 'mailto:?subject=' + encodeURIComponent('Join me on TuneRoom ❄') +
+               '&body=' + encodeURIComponent(text + '\n\n' + url);
+        break;
+      case 'native':
+        if(navigator.share){
+          navigator.share({ title:'TuneRoom ❄ — ' + rid, text:text, url:url }).catch(function(){});
+        } else {
+          copyLink();
+          if(typeof toast === 'function') toast('Link copied to clipboard!');
+        }
+        return;
+    }
+    if(href) window.open(href, '_blank', 'noopener,width=600,height=500');
+    closeShareModal();
+  }
+
+  window.addEventListener('DOMContentLoaded', function(){
+    var btn = document.getElementById('btn-share');
+    if(btn) btn.addEventListener('click', openShareModal);
+
+    var closeBtn = document.getElementById('share-close');
+    if(closeBtn) closeBtn.addEventListener('click', closeShareModal);
+
+    var copyBtn = document.getElementById('share-copy-btn');
+    if(copyBtn) copyBtn.addEventListener('click', copyLink);
+
+    var backdrop = document.getElementById('share-modal');
+    if(backdrop) backdrop.addEventListener('click', function(e){
+      if(e.target === backdrop) closeShareModal();
+    });
+
+    document.querySelectorAll('.share-app').forEach(function(btn){
+      btn.addEventListener('click', function(){ shareVia(btn.dataset.app); });
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', function(e){
+      if(e.key === 'Escape') closeShareModal();
+    });
+  });
+})();

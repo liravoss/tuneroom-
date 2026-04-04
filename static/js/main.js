@@ -225,7 +225,7 @@
       stopHeartbeat();
       // Guard until PLAYING fires — any state change during this is internal
       const p=guardUntilState(YT.PlayerState.PLAYING, 8000);
-      waitReady(()=>{ pc('loadVideoById',currentSong.id); });
+      waitReady(()=>{ pc('unMute'); pc('setVolume',100); pc('loadVideoById',currentSong.id); });
       p.then(()=>{}); // guard auto-clears when PLAYING fires via onStateChange
     });
 
@@ -316,7 +316,7 @@
       height:'100%', width:'100%',
       playerVars:{autoplay:0,controls:1,rel:0,modestbranding:1,iv_load_policy:3},
       events:{
-        onReady:()=>{ ytReady=true; pc('mute'); },
+        onReady:()=>{ ytReady=true; pc('unMute'); pc('setVolume',100); },
         onStateChange:e=>{
           const S=YT.PlayerState;
 
@@ -383,6 +383,7 @@
     // Guard blocks all emissions until player settles
     guardUntilState(shouldPlay?YT.PlayerState.PLAYING:YT.PlayerState.PAUSED, CONFIG.JOIN_TIMEOUT_MS);
     waitReady(()=>{
+      pc('unMute'); pc('setVolume',100);
       pc('loadVideoById',{videoId, startSeconds:Math.floor(startSec)});
       if(!shouldPlay){
         // Poll until buffered, then pause
@@ -704,7 +705,7 @@
 
   // ── Chunked playlist sender — 3 songs every 700ms so server never gets slammed ─
   function _sendChunked(songs){
-    const CHUNK = 3;
+    const CHUNK = 5;
     let i = 0;
     const total = songs.length;
     const btn = $('btn-playlist');
@@ -719,7 +720,7 @@
       i += CHUNK;
       socket?.emit('add_playlist',{room:ME.room, songs:chunk, username:ME.name});
       if(btn) btn.textContent='Loading '+Math.min(i,total)+'/'+total+'…';
-      setTimeout(sendNext, 700);
+      setTimeout(sendNext, 500);
     }
     sendNext();
   }
@@ -849,19 +850,18 @@ function initMobileTabs(){
   if (!tabs.length) return;
 
   function showPanel(panelId) {
-    document.querySelectorAll('#panel-player, #panel-queue, #panel-chat').forEach(el => {
-      el.style.display = 'none';
+    const panels = document.querySelectorAll('#panel-player, #panel-queue, #panel-chat');
+    panels.forEach(el => {
+      el.classList.remove('mob-active');
+      // also clear inline display so CSS class takes over cleanly
+      el.style.display = '';
     });
     const target = document.getElementById(panelId);
     if (target) {
-      target.style.display = 'flex';
+      target.classList.add('mob-active');
       setTimeout(() => {
-        target.offsetHeight;
         window.dispatchEvent(new Event('resize'));
-        if (ytPlayer && ytReady) {
-          ytPlayer.setSize(target.clientWidth, target.clientHeight);
-        }
-      }, 100);
+      }, 80);
     }
   }
 
@@ -882,6 +882,16 @@ function initMobileTabs(){
     }
   }
 }
+
+  // Clean up mobile classes when resizing to desktop
+  window.addEventListener('resize', () => {
+    if(window.innerWidth > 768){
+      ['panel-queue','panel-player','panel-chat'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el){ el.classList.remove('mob-active'); el.style.display = ''; }
+      });
+    }
+  });
 
   // ── Wire buttons ──────────────────────────────────────────────────────────────
   function wireEventListeners(){

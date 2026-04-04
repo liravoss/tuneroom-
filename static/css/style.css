@@ -124,7 +124,16 @@ html,body { height:100%; font-family:'Outfit',sans-serif; background:var(--bg); 
 .btn-join:hover { opacity:.9; box-shadow:0 6px 28px rgba(96,165,250,0.45); transform:translateY(-1px); }
 
 /* ════════ ROOM LAYOUT ════════ */
-#app { position:relative;z-index:3;display:grid;grid-template-columns:280px 1fr 270px;grid-template-rows:56px 1fr;height:100vh; }
+#app {
+  position: relative; z-index: 3;
+  display: grid;
+  /* fluid columns: queue min 220px max 300px, player fills rest, chat min 230px max 290px */
+  grid-template-columns: minmax(220px,300px) 1fr minmax(230px,290px);
+  grid-template-rows: 56px 1fr;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
 
 /* ── Header ── */
 header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14px;background:rgba(4,7,26,.9);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);z-index:100; }
@@ -139,7 +148,7 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   flex-shrink: 0;
 }
 
-.search-bar { flex:1;display:flex;gap:6px;max-width:440px;margin-left:auto;margin-right:auto;min-width:0; }
+.search-bar { flex:1;display:flex;gap:6px;max-width:440px;margin-left:auto;margin-right:auto;min-width:0;overflow:hidden; }
 .search-bar input { flex:1;background:rgba(8,15,45,.8);border:1px solid var(--bord);border-radius:9px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:.84rem;outline:none;transition:border-color .2s; }
 .search-bar input:focus { border-color:var(--ice1); }
 .search-bar input::placeholder { color:var(--dim); }
@@ -152,7 +161,7 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 #u-count { font-size:.74rem;color:var(--ice2); }
 
 /* Search results */
-#search-results { display:flex;flex-direction:column;position:absolute;top:56px;left:280px;right:270px;background:rgba(4,7,26,.99);border:1px solid var(--bord);border-top:none;z-index:200;max-height:320px;overflow-y:auto;padding:8px;gap:5px; }
+#search-results { display:flex;flex-direction:column;position:absolute;top:56px;left:clamp(220px,23vw,300px);right:clamp(230px,21vw,290px);background:rgba(4,7,26,.99);border:1px solid var(--bord);border-top:none;z-index:200;max-height:320px;overflow-y:auto;padding:8px;gap:5px; }
 #search-results:empty { display:none; }
 #search-results.open { display:flex; }
 .res-msg  { padding:18px;color:var(--dim);text-align:center;font-size:.82rem; }
@@ -248,10 +257,22 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 .q-item img  { width:44px;height:32px;border-radius:5px;object-fit:cover;flex-shrink:0;background:#1e3a8a; }
 
 /* ── Player Panel ── */
-#panel-player { display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:12px;overflow:hidden;position:relative; }
+#panel-player {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-start;
+  padding: 12px; gap: 10px;
+  overflow-y: auto; overflow-x: hidden;
+  position: relative; min-width: 0;
+}
+/* Center content vertically only when it fits */
+@supports (height: 100dvh) {
+  #panel-player { justify-content: center; }
+}
 #yt-wrap {
   width: 100%;
-  max-width: 580px;
+  max-width: min(580px, 100%);
+  /* On short screens, cap the height so player controls stay visible */
+  max-height: min(calc(100vh - 260px), 400px);
   aspect-ratio: 16/9;
   border-radius: 16px;
   overflow: hidden;
@@ -301,7 +322,7 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
   z-index: 1;
 }
 #yt-wrap > div,#yt-wrap iframe { width:100%!important;height:100%!important; }
-#now-playing { text-align:center;width:100%;max-width:460px; }
+#now-playing { text-align:center;width:100%;max-width:min(460px,100%); }
 .np-label   { font-size:.64rem;letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin-bottom:3px; }
 #np-title   { font-size:.9rem;font-weight:600;color:var(--ice2);text-shadow:0 0 14px var(--glow);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
 #np-channel { font-size:.72rem;color:var(--dim); }
@@ -355,7 +376,7 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 }
 
 /* Paste bar */
-#paste-bar { width:100%;max-width:460px;display:flex;gap:7px; }
+#paste-bar { width:100%;max-width:min(460px,100%);display:flex;gap:7px; }
 #paste-inp { flex:1;background:rgba(8,15,45,.8);border:1px solid var(--bord);border-radius:9px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:.79rem;outline:none;transition:border-color .2s; }
 #paste-inp:focus { border-color:var(--ice1); }
 #paste-inp::placeholder { color:var(--dim); }
@@ -698,6 +719,22 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
     border-top-color: var(--ice1);
   }
   .mob-tab:active { opacity: .7; }
+}
+
+
+/* ── Medium screens: tablets / small laptops (769px–1100px) ── */
+@media (min-width: 769px) and (max-width: 1100px) {
+  #app {
+    grid-template-columns: minmax(190px,240px) 1fr minmax(200px,240px);
+  }
+  #search-results {
+    left: clamp(190px,22vw,240px);
+    right: clamp(200px,22vw,240px);
+  }
+  .logo span { display: none; } /* hide ROOM part of TUNEROOM on tight header */
+  .search-bar { max-width: 320px; }
+  #yt-wrap { max-width: min(480px,100%); }
+  .panel-title-text, .panel-title { font-size: .62rem; letter-spacing: 1.5px; }
 }
 
 /* ── Hide mob-nav on desktop ── */

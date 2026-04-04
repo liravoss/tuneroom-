@@ -1,0 +1,11 @@
+flask>=3.0.0
+flask-socketio>=5.3.6
+python-socketio>=5.11.0
+python-engineio>=4.9.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+gevent>=24.2.1
+gevent-websocket>=0.10.1
+upstash-redis>=1.1.0
+flask-compress>=1.14
+yt-dlp>=2024.1.1

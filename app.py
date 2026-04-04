@@ -853,36 +853,50 @@ def on_add(data):
     emit('queue_updated', {'queue': queue}, to=rid)
 
 
+# Per-room lock so rapid playlist chunks don't race against each other
+import threading
+_queue_locks = {}
+_queue_locks_lock = threading.Lock()
+
+def _get_room_lock(rid):
+    with _queue_locks_lock:
+        if rid not in _queue_locks:
+            _queue_locks[rid] = threading.Lock()
+        return _queue_locks[rid]
+
+
 @socketio.on('add_playlist')
 def on_add_playlist(data):
-    """Receive a small chunk of songs (3 at a time) and append to Redis queue."""
+    """Receive a chunk of songs and append to Redis queue — race-safe via per-room lock."""
     rid      = sanitize_room_id(data.get('room', 'main'))
     username = sanitize_text(data.get('username', '?'), maxlen=20)
     songs_in = data.get('songs', [])
     if not isinstance(songs_in, list):
         return
-    queue = get_queue(rid)
-    added = []
-    for s in songs_in:
-        if len(queue) >= 200:
-            emit('toast', {'msg': '⚠ Queue full (200 max)'}, to=request.sid)
-            break
-        raw_id = sanitize_text(str(s.get('id', '')), maxlen=20)
-        if not raw_id:
-            continue
-        song = {
-            'id':        raw_id,
-            'title':     sanitize_text(s.get('title', ''), maxlen=150),
-            'channel':   sanitize_text(s.get('channel', ''), maxlen=80),
-            'thumbnail': f'https://img.youtube.com/vi/{raw_id}/mqdefault.jpg',
-            'added_by':  username,
-            'qid':       f"{raw_id}_{time.time()}_{len(queue)}"
-        }
-        queue.append(song)
-        added.append(song)
-    if added:
-        redis_set_queue(rid, queue)
-        emit('queue_updated', {'queue': queue}, to=rid)
+
+    with _get_room_lock(rid):          # ← only one chunk at a time per room
+        queue = get_queue(rid)         # fresh read inside the lock
+        added = []
+        for s in songs_in:
+            if len(queue) >= 200:
+                emit('toast', {'msg': '⚠ Queue full (200 max)'}, to=request.sid)
+                break
+            raw_id = sanitize_text(str(s.get('id', '')), maxlen=20)
+            if not raw_id:
+                continue
+            song = {
+                'id':        raw_id,
+                'title':     sanitize_text(s.get('title', ''), maxlen=150),
+                'channel':   sanitize_text(s.get('channel', ''), maxlen=80),
+                'thumbnail': f'https://img.youtube.com/vi/{raw_id}/mqdefault.jpg',
+                'added_by':  username,
+                'qid':       f"{raw_id}_{time.time()}_{len(queue)}"
+            }
+            queue.append(song)
+            added.append(song)
+        if added:
+            redis_set_queue(rid, queue)
+            emit('queue_updated', {'queue': queue}, to=rid)
 
 
 @socketio.on('remove_from_queue')
@@ -1499,7 +1513,7 @@ def api_spotify_playlist():
                 if t and t not in seen and len(t) > 2:
                     seen.add(t)
                     tracks.append((t, ''))
-            tracks = tracks[:200]  # cap at 200
+            tracks = tracks[:50]  # cap at 50
 
         if not tracks:
             return jsonify({'error': 'No tracks found — playlist may be private'}), 404
@@ -1509,7 +1523,7 @@ def api_spotify_playlist():
 
     # Search each track on YouTube (parallel with gevent pool)
     import gevent.pool, time as _time
-    pool = gevent.pool.Pool(size=10)
+    pool = gevent.pool.Pool(size=5)
     songs = []
 
     # Collect all available YouTube keys
@@ -1540,11 +1554,11 @@ def api_spotify_playlist():
         return None
 
     results = []
-    jobs = [pool.spawn(search_track, t, a) for (t, a) in tracks[:200]]
+    jobs = [pool.spawn(search_track, t, a) for (t, a) in tracks[:50]]
     import gevent
-    gevent.joinall(jobs, timeout=120)
+    gevent.joinall(jobs, timeout=60)
 
-    for job, (title, artist) in zip(jobs, tracks[:200]):
+    for job, (title, artist) in zip(jobs, tracks[:50]):
         hit = job.value
         if hit:
             hit = dict(hit)

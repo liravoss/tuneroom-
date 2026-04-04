@@ -497,14 +497,24 @@
     _trackActiveLyricsLine(body);
   }
 
+  // ── Lyrics: time-based auto-scroll synced to YouTube player ─────────────────
+  let _lyrAutoScrollTimer = null;
+  let _lyrUserScrolling   = false;
+  let _lyrScrollResume    = null;
+
   function _trackActiveLyricsLine(body){
     const lines = Array.from(body.querySelectorAll('.lyr-line:not(.lyr-spacer)'));
     if(!lines.length) return;
 
-    // Highlight first line right away
     lines[0].classList.add('lyr-active');
 
-    function updateActive(){
+    // Pause auto-scroll for 4s when user manually scrolls
+    body.onscroll = () => {
+      _lyrUserScrolling = true;
+      clearTimeout(_lyrScrollResume);
+      _lyrScrollResume = setTimeout(()=>{ _lyrUserScrolling = false; }, 4000);
+
+      // Still highlight closest line to scroll position
       const mid = body.scrollTop + body.clientHeight * 0.35;
       let closest = lines[0], closestDist = Infinity;
       for(const l of lines){
@@ -513,9 +523,30 @@
       }
       lines.forEach(l => l.classList.remove('lyr-active'));
       closest.classList.add('lyr-active');
-    }
+    };
 
-    body.onscroll = updateActive;
+    // Auto-scroll: every 500ms, use YT player time to pick active line
+    clearInterval(_lyrAutoScrollTimer);
+    _lyrAutoScrollTimer = setInterval(()=>{
+      if(!lyricsOpen || _lyrUserScrolling) return;
+      if(!ytReady || !ytPlayer) return;
+
+      const totalSec = pc('getDuration') || 0;
+      const curSec   = pc('getCurrentTime') || 0;
+      if(totalSec <= 0) return;
+
+      // Map playback progress to line index
+      const progress = curSec / totalSec;
+      const idx = Math.min(Math.floor(progress * lines.length), lines.length - 1);
+      const target = lines[idx];
+
+      lines.forEach(l => l.classList.remove('lyr-active'));
+      target.classList.add('lyr-active');
+
+      // Scroll active line to ~35% from top
+      const offset = target.offsetTop - body.clientHeight * 0.35;
+      body.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+    }, 500);
   }
 
   async function fetchLyrics(title,artist){
@@ -535,7 +566,8 @@
     lyricsOpen=false;
     $('lyrics-panel')?.classList.remove('open');
     $('btn-lyrics')?.classList.remove('active');
-    // Pop the history entry we pushed on open (handles Android back)
+    clearInterval(_lyrAutoScrollTimer);
+    _lyrAutoScrollTimer = null;
     if(history.state && history.state.lyrics) history.back();
   }
 
@@ -703,9 +735,9 @@
     }).catch(()=>{ socket?.emit('add_to_queue',{room:ME.room,id:vid,title:val,channel:'',username:ME.name}); inp.value=''; toast('Added ❄️'); });
   }
 
-  // ── Chunked playlist sender — 8 songs every 400ms so server never gets slammed ─
+  // ── Chunked playlist sender — 5 songs every 800ms, server lock prevents race ──
   function _sendChunked(songs){
-    const CHUNK = 8;
+    const CHUNK = 5;
     let i = 0;
     const total = songs.length;
     const btn = $('btn-playlist');
@@ -720,7 +752,7 @@
       i += CHUNK;
       socket?.emit('add_playlist',{room:ME.room, songs:chunk, username:ME.name});
       if(btn) btn.textContent='Loading '+Math.min(i,total)+'/'+total+'…';
-      setTimeout(sendNext, 400);
+      setTimeout(sendNext, 800);
     }
     sendNext();
   }

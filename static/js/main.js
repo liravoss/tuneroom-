@@ -703,9 +703,9 @@
     }).catch(()=>{ socket?.emit('add_to_queue',{room:ME.room,id:vid,title:val,channel:'',username:ME.name}); inp.value=''; toast('Added ❄️'); });
   }
 
-  // ── Chunked playlist sender — 3 songs every 700ms so server never gets slammed ─
+  // ── Chunked playlist sender — 8 songs every 400ms so server never gets slammed ─
   function _sendChunked(songs){
-    const CHUNK = 5;
+    const CHUNK = 8;
     let i = 0;
     const total = songs.length;
     const btn = $('btn-playlist');
@@ -720,7 +720,7 @@
       i += CHUNK;
       socket?.emit('add_playlist',{room:ME.room, songs:chunk, username:ME.name});
       if(btn) btn.textContent='Loading '+Math.min(i,total)+'/'+total+'…';
-      setTimeout(sendNext, 500);
+      setTimeout(sendNext, 400);
     }
     sendNext();
   }

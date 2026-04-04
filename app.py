@@ -1499,7 +1499,7 @@ def api_spotify_playlist():
                 if t and t not in seen and len(t) > 2:
                     seen.add(t)
                     tracks.append((t, ''))
-            tracks = tracks[:50]  # cap at 50
+            tracks = tracks[:200]  # cap at 200
 
         if not tracks:
             return jsonify({'error': 'No tracks found — playlist may be private'}), 404
@@ -1509,7 +1509,7 @@ def api_spotify_playlist():
 
     # Search each track on YouTube (parallel with gevent pool)
     import gevent.pool, time as _time
-    pool = gevent.pool.Pool(size=5)
+    pool = gevent.pool.Pool(size=10)
     songs = []
 
     # Collect all available YouTube keys
@@ -1540,11 +1540,11 @@ def api_spotify_playlist():
         return None
 
     results = []
-    jobs = [pool.spawn(search_track, t, a) for (t, a) in tracks[:50]]
+    jobs = [pool.spawn(search_track, t, a) for (t, a) in tracks[:200]]
     import gevent
-    gevent.joinall(jobs, timeout=60)
+    gevent.joinall(jobs, timeout=120)
 
-    for job, (title, artist) in zip(jobs, tracks[:50]):
+    for job, (title, artist) in zip(jobs, tracks[:200]):
         hit = job.value
         if hit:
             hit = dict(hit)

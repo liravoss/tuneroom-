@@ -546,12 +546,27 @@ def _clean(title, artist):
     a = a.strip()
     return t, a
 
+# Keywords that strongly suggest no lyrics exist
+_INSTRUMENTAL_PATTERNS = _re.compile(
+    r'\b(instrumental|inst\.?|karaoke|backing\s*track|no\s*vocal|orchestral|'
+    r'piano\s*cover|guitar\s*cover|lofi|lo-fi|lo\s*fi|ambient|soundtrack|'
+    r'bgm|ost|background\s*music|music\s*box|8\s*bit|8bit|chiptune|'
+    r'phonk\s*mix|slowed|reverb|nightcore|remix(?!\s+lyrics)|extended\s+mix|'
+    r'drum\s*(?:cover|track)|bass\s*(?:cover|track)|jazz\s*(?:version|cover)|'
+    r'classical|symphony|concerto|sonata|étude|nocturne|prelude)\b',
+    _re.I
+)
+
 @app.route('/api/lyrics')
 def api_lyrics():
     title  = request.args.get('title',  '').strip()
     artist = request.args.get('artist', '').strip()
     if not title:
         return jsonify({'error': 'No title'}), 400
+
+    # Detect instrumentals / covers / remixes upfront — skip API calls entirely
+    if _INSTRUMENTAL_PATTERNS.search(title) or _INSTRUMENTAL_PATTERNS.search(artist):
+        return jsonify({'error': 'instrumental', 'lyrics': None}), 404
 
     clean_title, clean_artist = _clean(title, artist)
 
@@ -853,50 +868,36 @@ def on_add(data):
     emit('queue_updated', {'queue': queue}, to=rid)
 
 
-# Per-room lock so rapid playlist chunks don't race against each other
-import threading
-_queue_locks = {}
-_queue_locks_lock = threading.Lock()
-
-def _get_room_lock(rid):
-    with _queue_locks_lock:
-        if rid not in _queue_locks:
-            _queue_locks[rid] = threading.Lock()
-        return _queue_locks[rid]
-
-
 @socketio.on('add_playlist')
 def on_add_playlist(data):
-    """Receive a chunk of songs and append to Redis queue — race-safe via per-room lock."""
+    """Receive a small chunk of songs (3 at a time) and append to Redis queue."""
     rid      = sanitize_room_id(data.get('room', 'main'))
     username = sanitize_text(data.get('username', '?'), maxlen=20)
     songs_in = data.get('songs', [])
     if not isinstance(songs_in, list):
         return
-
-    with _get_room_lock(rid):          # ← only one chunk at a time per room
-        queue = get_queue(rid)         # fresh read inside the lock
-        added = []
-        for s in songs_in:
-            if len(queue) >= 200:
-                emit('toast', {'msg': '⚠ Queue full (200 max)'}, to=request.sid)
-                break
-            raw_id = sanitize_text(str(s.get('id', '')), maxlen=20)
-            if not raw_id:
-                continue
-            song = {
-                'id':        raw_id,
-                'title':     sanitize_text(s.get('title', ''), maxlen=150),
-                'channel':   sanitize_text(s.get('channel', ''), maxlen=80),
-                'thumbnail': f'https://img.youtube.com/vi/{raw_id}/mqdefault.jpg',
-                'added_by':  username,
-                'qid':       f"{raw_id}_{time.time()}_{len(queue)}"
-            }
-            queue.append(song)
-            added.append(song)
-        if added:
-            redis_set_queue(rid, queue)
-            emit('queue_updated', {'queue': queue}, to=rid)
+    queue = get_queue(rid)
+    added = []
+    for s in songs_in:
+        if len(queue) >= 200:
+            emit('toast', {'msg': '⚠ Queue full (200 max)'}, to=request.sid)
+            break
+        raw_id = sanitize_text(str(s.get('id', '')), maxlen=20)
+        if not raw_id:
+            continue
+        song = {
+            'id':        raw_id,
+            'title':     sanitize_text(s.get('title', ''), maxlen=150),
+            'channel':   sanitize_text(s.get('channel', ''), maxlen=80),
+            'thumbnail': f'https://img.youtube.com/vi/{raw_id}/mqdefault.jpg',
+            'added_by':  username,
+            'qid':       f"{raw_id}_{time.time()}_{len(queue)}"
+        }
+        queue.append(song)
+        added.append(song)
+    if added:
+        redis_set_queue(rid, queue)
+        emit('queue_updated', {'queue': queue}, to=rid)
 
 
 @socketio.on('remove_from_queue')

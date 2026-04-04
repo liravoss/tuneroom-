@@ -316,7 +316,7 @@
       height:'100%', width:'100%',
       playerVars:{autoplay:0,controls:1,rel:0,modestbranding:1,iv_load_policy:3},
       events:{
-        onReady:()=>{ ytReady=true; },
+        onReady:()=>{ ytReady=true; pc('mute'); },
         onStateChange:e=>{
           const S=YT.PlayerState;
 
@@ -410,6 +410,7 @@
     guardUntilState(YT.PlayerState.PLAYING, 8000);
     recordOwnEmission('play_song');
     waitReady(()=>{
+      pc('unMute'); pc('setVolume', 100);
       pc('loadVideoById',currentSong.id);
       socket?.emit('play_song',{room:ME.room,index:idx,ts:Date.now()});
     });
@@ -475,42 +476,45 @@
 
   function _renderLyrics(text){
     const body=$('lyrics-body'); if(!body) return;
-    const lines = text.split('\n');
+    // Normalise — collapse 3+ blank lines to 1, trim edges
+    const raw = text.replace(/\r\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+    const lines = raw.split('\n');
     body.innerHTML = '';
+    body.scrollTop = 0;
+
     lines.forEach((line, i) => {
       const div = document.createElement('div');
-      div.className = 'lyr-line';
-      div.style.animationDelay = Math.min(i * 45, 900) + 'ms';
-      div.textContent = line.trim() || '\u2022'; // bullet for empty lines
-      if(!line.trim()) div.classList.add('lyr-spacer');
+      const isEmpty = !line.trim();
+      div.className = 'lyr-line' + (isEmpty ? ' lyr-spacer' : '');
+      div.textContent = isEmpty ? '' : line.trim();
+      // Stagger: first 20 lines animate fast, rest appear quickly after
+      const delay = i < 20 ? i * 30 : 600 + (i - 20) * 5;
+      div.style.animationDelay = delay + 'ms';
       body.appendChild(div);
     });
-    // Animate active line tracking as user scrolls
+
     _trackActiveLyricsLine(body);
   }
 
   function _trackActiveLyricsLine(body){
-    clearInterval(_lyrScrollTimer);
-    const lines = body.querySelectorAll('.lyr-line');
+    const lines = Array.from(body.querySelectorAll('.lyr-line:not(.lyr-spacer)'));
     if(!lines.length) return;
-    // Highlight first non-spacer line initially
-    const first = body.querySelector('.lyr-line:not(.lyr-spacer)');
-    if(first) first.classList.add('lyr-active');
 
-    // On scroll, activate the line closest to 40% height from top
-    body.onscroll = () => {
-      const mid = body.scrollTop + body.clientHeight * 0.38;
-      let closest = null, closestDist = Infinity;
-      lines.forEach(l => {
-        if(l.classList.contains('lyr-spacer')) return;
+    // Highlight first line right away
+    lines[0].classList.add('lyr-active');
+
+    function updateActive(){
+      const mid = body.scrollTop + body.clientHeight * 0.35;
+      let closest = lines[0], closestDist = Infinity;
+      for(const l of lines){
         const dist = Math.abs(l.offsetTop - mid);
         if(dist < closestDist){ closestDist = dist; closest = l; }
-      });
-      if(closest){
-        lines.forEach(l => l.classList.remove('lyr-active'));
-        closest.classList.add('lyr-active');
       }
-    };
+      lines.forEach(l => l.classList.remove('lyr-active'));
+      closest.classList.add('lyr-active');
+    }
+
+    body.onscroll = updateActive;
   }
 
   async function fetchLyrics(title,artist){

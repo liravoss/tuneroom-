@@ -853,6 +853,38 @@ def on_add(data):
     emit('queue_updated', {'queue': queue}, to=rid)
 
 
+@socketio.on('add_playlist')
+def on_add_playlist(data):
+    """Receive a small chunk of songs (3 at a time) and append to Redis queue."""
+    rid      = sanitize_room_id(data.get('room', 'main'))
+    username = sanitize_text(data.get('username', '?'), maxlen=20)
+    songs_in = data.get('songs', [])
+    if not isinstance(songs_in, list):
+        return
+    queue = get_queue(rid)
+    added = []
+    for s in songs_in:
+        if len(queue) >= 200:
+            emit('toast', {'msg': '⚠ Queue full (200 max)'}, to=request.sid)
+            break
+        raw_id = sanitize_text(str(s.get('id', '')), maxlen=20)
+        if not raw_id:
+            continue
+        song = {
+            'id':        raw_id,
+            'title':     sanitize_text(s.get('title', ''), maxlen=150),
+            'channel':   sanitize_text(s.get('channel', ''), maxlen=80),
+            'thumbnail': f'https://img.youtube.com/vi/{raw_id}/mqdefault.jpg',
+            'added_by':  username,
+            'qid':       f"{raw_id}_{time.time()}_{len(queue)}"
+        }
+        queue.append(song)
+        added.append(song)
+    if added:
+        redis_set_queue(rid, queue)
+        emit('queue_updated', {'queue': queue}, to=rid)
+
+
 @socketio.on('remove_from_queue')
 def on_remove(data):
     rid      = sanitize_room_id(data.get('room', 'main'))

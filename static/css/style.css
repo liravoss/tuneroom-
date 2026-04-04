@@ -418,49 +418,62 @@ header { grid-column:1/-1;display:flex;align-items:center;gap:11px;padding:0 14p
 
 /* ── Spotify-style line-by-line animated lyrics ── */
 
-/* Each line fades + rises in with stagger */
 .lyr-line {
   font-family: 'Outfit', sans-serif;
-  font-size: 1.05rem;
-  font-weight: 600;
-  line-height: 1.55;
-  padding: 8px 0 8px 12px;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.6;
+  padding: 7px 0 7px 14px;
   border-left: 2px solid transparent;
-  color: rgba(147,197,253,0.35);
+  /* dim by default */
+  color: rgba(147,197,253,0.3);
   cursor: default;
-  transition: color .35s ease, transform .35s ease, border-color .35s ease, text-shadow .35s ease;
+  /* animate in from invisible — fill-mode keeps final state */
   opacity: 0;
-  transform: translateY(10px);
-  animation: lyrLineIn .5s ease forwards;
+  animation: lyrLineIn .45s ease forwards;
+  /* smooth highlight transitions */
+  transition: color .3s ease, transform .3s ease,
+              border-color .3s ease, text-shadow .3s ease,
+              opacity .3s ease;
   word-break: break-word;
   user-select: text;
 }
+/* Spacer lines (blank) — very small, truly invisible */
 .lyr-line.lyr-spacer {
-  color: transparent !important;
-  font-size: .4rem;
-  padding: 2px 0;
+  padding: 3px 0;
   border-left-color: transparent !important;
   pointer-events: none;
+  font-size: 0.3rem;
+  opacity: 0 !important;
+  animation: none;
 }
 
-/* Active line — glows bright like Spotify */
+/* Active / highlighted line */
 .lyr-line.lyr-active {
-  color: var(--text);
+  color: rgba(221,240,254,0.95);
   border-left-color: var(--ice1);
-  transform: translateX(6px);
-  text-shadow: 0 0 20px rgba(96,165,250,0.6), 0 0 40px rgba(56,189,248,0.25);
-}
-.lyr-line:not(.lyr-spacer):not(.lyr-active):hover {
-  color: rgba(147,197,253,0.65);
+  transform: translateX(7px);
+  text-shadow:
+    0 0 18px rgba(96,165,250,0.7),
+    0 0 40px rgba(56,189,248,0.3);
 }
 
-/* Stagger animation */
+/* Nearby hover highlight */
+.lyr-line:not(.lyr-spacer):not(.lyr-active):hover {
+  color: rgba(147,197,253,0.6);
+  transform: translateX(3px);
+}
+
+/* Fade + rise animation — opacity ends at 1 via forwards fill */
 @keyframes lyrLineIn {
-  from { opacity: 0; transform: translateY(12px); filter: blur(3px); }
+  from { opacity: 0; transform: translateY(10px); filter: blur(4px); }
   to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
 }
+/* Active overrides the translated-up default with translateX */
+.lyr-line.lyr-active { transform: translateX(7px) !important; }
+.lyr-line:not(.lyr-spacer):not(.lyr-active):hover { transform: translateX(3px); }
 
-/* Fetching dots animation */
+/* Fetching dots */
 .lyr-loading-dots::after {
   content: '';
   animation: lyrDots 1.4s steps(4, end) infinite;

@@ -470,15 +470,59 @@
   function toggleVideoMode(){ videoMode=!videoMode; applyVideoMode(); toast(videoMode?'Video mode':'Audio mode'); }
 
   // ── Lyrics ────────────────────────────────────────────────────────────────────
+  // ── Spotify-style animated lyrics ────────────────────────────────────────────
+  let _lyrScrollTimer = null;
+
+  function _renderLyrics(text){
+    const body=$('lyrics-body'); if(!body) return;
+    const lines = text.split('\n');
+    body.innerHTML = '';
+    lines.forEach((line, i) => {
+      const div = document.createElement('div');
+      div.className = 'lyr-line';
+      div.style.animationDelay = Math.min(i * 45, 900) + 'ms';
+      div.textContent = line.trim() || '\u2022'; // bullet for empty lines
+      if(!line.trim()) div.classList.add('lyr-spacer');
+      body.appendChild(div);
+    });
+    // Animate active line tracking as user scrolls
+    _trackActiveLyricsLine(body);
+  }
+
+  function _trackActiveLyricsLine(body){
+    clearInterval(_lyrScrollTimer);
+    const lines = body.querySelectorAll('.lyr-line');
+    if(!lines.length) return;
+    // Highlight first non-spacer line initially
+    const first = body.querySelector('.lyr-line:not(.lyr-spacer)');
+    if(first) first.classList.add('lyr-active');
+
+    // On scroll, activate the line closest to 40% height from top
+    body.onscroll = () => {
+      const mid = body.scrollTop + body.clientHeight * 0.38;
+      let closest = null, closestDist = Infinity;
+      lines.forEach(l => {
+        if(l.classList.contains('lyr-spacer')) return;
+        const dist = Math.abs(l.offsetTop - mid);
+        if(dist < closestDist){ closestDist = dist; closest = l; }
+      });
+      if(closest){
+        lines.forEach(l => l.classList.remove('lyr-active'));
+        closest.classList.add('lyr-active');
+      }
+    };
+  }
+
   async function fetchLyrics(title,artist){
     const body=$('lyrics-body'); if(!body) return;
-    body.innerHTML='<div class="lyr-msg">Fetching…</div>';
+    body.innerHTML='<div class="lyr-msg"><span class="lyr-loading-dots">Fetching lyrics</span></div>';
     const t=(title||'').replace(/[\(\[].*?[\)\]]/g,'').replace(/official.*?(video|audio)?/gi,'').trim();
     const a=(artist||'').replace(/\s*(ft\.?|feat\.?|&).*/i,'').trim();
     try{
       const d=await fetch('/api/lyrics?title='+encodeURIComponent(t)+'&artist='+encodeURIComponent(a),
         {signal:AbortSignal.timeout(CONFIG.FETCH_TIMEOUT_MS)}).then(r=>r.json());
-      body.innerHTML=d.lyrics?'<pre class="lyr-text">'+esc(d.lyrics)+'</pre>':'<div class="lyr-msg">No lyrics found</div>';
+      if(d.lyrics) _renderLyrics(d.lyrics);
+      else body.innerHTML='<div class="lyr-msg">No lyrics found for this song</div>';
     }catch{ body.innerHTML='<div class="lyr-msg">Lyrics unavailable</div>'; }
   }
   function closeLyrics(){
@@ -654,39 +698,60 @@
     }).catch(()=>{ socket?.emit('add_to_queue',{room:ME.room,id:vid,title:val,channel:'',username:ME.name}); inp.value=''; toast('Added ❄️'); });
   }
 
+  // ── Chunked playlist sender — 3 songs every 700ms so server never gets slammed ─
+  function _sendChunked(songs){
+    const CHUNK = 3;
+    let i = 0;
+    const total = songs.length;
+    const btn = $('btn-playlist');
+
+    function sendNext(){
+      if(i >= total){
+        if(btn){ btn.textContent='📋 Load'; btn.disabled=false; }
+        toast('✓ All '+total+' songs loaded ❄️');
+        return;
+      }
+      const chunk = songs.slice(i, i+CHUNK);
+      i += CHUNK;
+      socket?.emit('add_playlist',{room:ME.room, songs:chunk, username:ME.name});
+      if(btn) btn.textContent='Loading '+Math.min(i,total)+'/'+total+'…';
+      setTimeout(sendNext, 700);
+    }
+    sendNext();
+  }
+
   function doPlaylist(){
     const inp=$('playlist-inp'); const url=inp?.value?.trim(); if(!url) return toast('Paste a playlist URL');
-    const btn=$('btn-playlist'); if(btn) btn.textContent='⏳…';
+    const btn=$('btn-playlist');
+    if(btn){ btn.textContent='⏳ Fetching…'; btn.disabled=true; }
+    inp.value='';
 
     // ── Spotify playlist detection ──────────────────────────────────────────────
     const spotifyMatch = url.match(/spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
     if(spotifyMatch){
-      // Forward to backend Spotify handler
       fetch('/api/spotify-playlist?url='+encodeURIComponent(url)).then(r=>r.json()).then(d=>{
-        if(btn) btn.textContent='📋 Load';
-        if(d.error) return toast('Spotify error: '+d.error);
+        if(d.error){ if(btn){btn.textContent='📋 Load';btn.disabled=false;} return toast('Spotify: '+d.error); }
         const songs=(d.songs||[]);
-        if(!songs.length) return toast('No songs found');
-        socket?.emit('add_playlist',{room:ME.room,songs,username:ME.name});
-        inp.value=''; toast('Loaded '+songs.length+' Spotify songs ❄️');
-      }).catch(()=>{ if(btn) btn.textContent='📋 Load'; toast('Spotify playlist failed'); });
+        if(!songs.length){ if(btn){btn.textContent='📋 Load';btn.disabled=false;} return toast('No songs found'); }
+        toast('Found '+songs.length+' Spotify songs — loading…');
+        _sendChunked(songs);
+      }).catch(()=>{ if(btn){btn.textContent='📋 Load';btn.disabled=false;} toast('Spotify playlist failed'); });
       return;
     }
 
     // ── YouTube playlist ────────────────────────────────────────────────────────
     fetch('/api/playlist?url='+encodeURIComponent(url)).then(r=>r.json()).then(d=>{
-      if(btn) btn.textContent='📋 Load';
-      if(d.error) return toast('Error: '+d.error);
+      if(d.error){ if(btn){btn.textContent='📋 Load';btn.disabled=false;} return toast('Error: '+d.error); }
       const songs=(d.songs||[]).map(s=>({
-        id:s.id,title:s.title,channel:s.channel||'',
+        id:s.id, title:s.title, channel:s.channel||'',
         thumbnail:'https://img.youtube.com/vi/'+s.id+'/mqdefault.jpg',
         added_by:ME.name,
         qid:s.id+'_'+Date.now()+'_'+Math.random().toString(36).slice(2,5)
       }));
-      if(!songs.length) return toast('No songs found');
-      socket?.emit('add_playlist',{room:ME.room,songs,username:ME.name});
-      inp.value=''; toast('Loaded '+songs.length+' songs ❄️');
-    }).catch(()=>{ if(btn) btn.textContent='📋 Load'; toast('Playlist failed'); });
+      if(!songs.length){ if(btn){btn.textContent='📋 Load';btn.disabled=false;} return toast('No songs found'); }
+      toast('Found '+songs.length+' songs — loading…');
+      _sendChunked(songs);
+    }).catch(()=>{ if(btn){btn.textContent='📋 Load';btn.disabled=false;} toast('Playlist failed'); });
   }
 
   // ── Voice (WebRTC) ────────────────────────────────────────────────────────────
